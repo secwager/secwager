@@ -1,0 +1,12 @@
+{
+    "folders": [
+        {
+            "name": "Cashier Service",
+            "path": "./cashier"
+        }
+    ],
+    "settings": {
+        "cmake.sourceDirectory": "${workspaceFolder}",
+        "cmake.configureOnOpen": false
+    }
+}

@@ -3,6 +3,10 @@
         {
             "name": "Cashier Service",
             "path": "./cashier"
+        },
+        {
+            "name": "Calculator Service",
+            "path": "./calculator"
         }
     ],
     "settings": {

@@ -2,7 +2,7 @@
 
 
 namespace secwager {
-    namespace foo {
+    namespace calculator {
         int Calculator::multiply(int a, int b) {
             return a * b;
         }

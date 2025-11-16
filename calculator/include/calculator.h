@@ -2,7 +2,7 @@
 
 namespace secwager
 {
-    namespace foo
+    namespace calculator
     {
         class Calculator
         {

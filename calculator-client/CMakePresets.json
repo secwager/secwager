@@ -1,0 +1,21 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "vcpkg",
+            "displayName": "vcpkg",
+            "binaryDir": "${sourceDir}/build",
+            "description": "Default configuration",
+            "generator": "Ninja",
+            "cacheVariables": {
+                        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+
+            }
+        },
+        {
+            "name": "default",
+            "inherits": "vcpkg",
+            "displayName": "default configuration (please ensure VCPKG_ROOT is set)"
+        }
+    ]
+}

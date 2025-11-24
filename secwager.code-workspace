@@ -7,6 +7,14 @@
         {
             "name": "Calculator Service",
             "path": "./calculator"
+        },
+        {
+            "name": "Calculator Client",
+            "path": "./calculator-client"
+        },
+        {
+            "name": "asio-fun",
+            "path": "./asio-fun"
         }
     ],
     "settings": {

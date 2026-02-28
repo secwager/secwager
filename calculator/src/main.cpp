@@ -8,6 +8,6 @@ int main() {
     secwager::calculator::Calculator calculator;
     secwager::calculator::CalculatorController controller(calculator);
     controller.set_up_routes(app);
-    app.port(18080).multithreaded().run();
+    app.port(8080).multithreaded().run();
     return 0;
 }

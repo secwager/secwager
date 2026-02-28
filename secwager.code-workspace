@@ -19,6 +19,8 @@
     ],
     "settings": {
         "cmake.sourceDirectory": "${workspaceFolder}",
-        "cmake.configureOnOpen": false
+        "cmake.configureOnOpen": false,
+        "C_Cpp.default.cppStandard": "c++23",
+        "editor.formatOnSave": true
     }
 }

@@ -1,5 +1,5 @@
 #include "engine.hpp"
-#include "book_snapshot.pb.h"
+#include "secwager/book_snapshot.pb.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -166,7 +166,7 @@ void MatchEngine::cancel(t_orderid id) {
 }
 
 std::string MatchEngine::serialize() const {
-    BookSnapshot snap;
+    secwager::BookSnapshot snap;
     snap.set_best_bid(bid_max_);
     snap.set_best_ask(ask_min_);
     snap.set_pool_top(pool_top_);
@@ -211,9 +211,9 @@ std::string MatchEngine::serialize() const {
 void MatchEngine::restore(const std::string& bytes) {
     reset();
 
-    BookSnapshot snap;
+    secwager::BookSnapshot snap;
     if (!snap.ParseFromString(bytes))
-        throw std::runtime_error("failed to parse BookSnapshot");
+        throw std::runtime_error("failed to parse secwager::BookSnapshot");
 
     uint32_t max_id = 0;
 

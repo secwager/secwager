@@ -1,4 +1,5 @@
 syntax = "proto3";
+package secwager;
 
 message OrderSnapshot {
     uint32 id     = 1;   // original t_orderid — preserved for cancel resolution

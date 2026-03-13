@@ -1,0 +1,11 @@
+syntax = "proto3";
+package market;
+import "secwager/common.proto";
+
+// Published to depth_updates whenever best bid OR best ask changes.
+// Consumed by market data clients, frontend, and any top-of-book subscriber.
+message DepthUpdate {
+  string symbol   = 1;
+  uint32 best_bid = 2;  // 0 = no resting bids
+  uint32 best_ask = 3;  // 0 = no resting asks
+}

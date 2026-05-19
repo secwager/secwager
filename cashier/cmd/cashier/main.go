@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -19,16 +17,14 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 
-	"github.com/secwager/secwager/cashier/internal"
-
 	pb "github.com/secwager/secwager/cashier/gen/cashier"
+	"github.com/secwager/secwager/cashier/internal"
 )
 
 func main() {
 	pgDSN := mustEnv("CASHIER_PG_DSN")
 	listenAddr := envOr("CASHIER_LISTEN_ADDR", "0.0.0.0:50051")
 	poolSize := parseInt(envOr("CASHIER_PG_POOL_SIZE", "10"))
-	idempotencyTTL := parseDuration(envOr("CASHIER_IDEMPOTENCY_TTL", "24h"))
 
 	runMigrations(pgDSN)
 
@@ -44,16 +40,12 @@ func main() {
 	}
 	defer pool.Close()
 
-	cashier := internal.NewPostgresCashier(pool, idempotencyTTL)
-
-	go purgeExpiredIdempotencyKeys(ctx, pool)
-
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 	srv := grpc.NewServer()
-	pb.RegisterCashierServiceServer(srv, internal.NewCashierService(cashier))
+	pb.RegisterCashierServiceServer(srv, internal.NewCashierService(internal.NewPostgresCashier(pool)))
 
 	log.Printf("cashier listening on %s", listenAddr)
 
@@ -92,22 +84,6 @@ func runMigrations(dsn string) {
 	log.Println("migrations applied")
 }
 
-func purgeExpiredIdempotencyKeys(ctx context.Context, pool *pgxpool.Pool) {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, err := pool.Exec(ctx, `DELETE FROM idempotency_keys WHERE expires_at < NOW()`)
-			if err != nil {
-				log.Printf("purge idempotency keys: %v", err)
-			}
-		}
-	}
-}
-
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -130,14 +106,3 @@ func parseInt(s string) int {
 	}
 	return n
 }
-
-func parseDuration(s string) time.Duration {
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		log.Fatalf("invalid duration %q: %v", s, err)
-	}
-	return d
-}
-
-// suppress unused import error until migrate is wired
-var _ = fmt.Sprintf

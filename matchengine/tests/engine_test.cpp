@@ -320,3 +320,57 @@ TEST_F(EngineTest, SerializeRestorePreservesTimePriority) {
     ASSERT_EQ(execs2.size(), 1u);
     EXPECT_EQ(std::string(execs2[0].seller, 8), std::string("s_first "));
 }
+
+// --- New correctness/safety tests ---
+
+TEST_F(EngineTest, PriceZeroRejected) {
+    EXPECT_THROW(eng_.limit(make_order("trader  ", 0, 10, 'B')), std::out_of_range);
+    EXPECT_THROW(eng_.limit(make_order("trader  ", 0, 10, 'S')), std::out_of_range);
+}
+
+TEST_F(EngineTest, CancelBestBidFallsBackToNextLevel) {
+    t_orderid id100 = eng_.limit(make_order("buyer1  ", 100, 5, 'B'));
+    eng_.limit(make_order("buyer2  ",  99, 5, 'B'));
+    eng_.cancel(id100);
+    EXPECT_EQ(eng_.best_bid(), 99);
+}
+
+TEST_F(EngineTest, CancelBestAskFallsBackToNextLevel) {
+    t_orderid id100 = eng_.limit(make_order("seller1 ", 100, 5, 'S'));
+    eng_.limit(make_order("seller2 ", 101, 5, 'S'));
+    eng_.cancel(id100);
+    EXPECT_EQ(eng_.best_ask(), 101);
+}
+
+TEST_F(EngineTest, CancelNonBestLevelNoTrackerChange) {
+    eng_.limit(make_order("buyer1  ", 100, 5, 'B'));
+    t_orderid id99 = eng_.limit(make_order("buyer2  ",  99, 5, 'B'));
+    eng_.cancel(id99);
+    EXPECT_EQ(eng_.best_bid(), 100);
+}
+
+TEST_F(EngineTest, PoolRecyclingPreventsExhaustion) {
+    std::vector<Execution> execs;
+    MatchEngine small_eng([&execs](const Execution& e) { execs.push_back(e); }, 8);
+    for (int i = 0; i < 1000; ++i) {
+        small_eng.limit(make_order("seller  ", 100, 1, 'S'));
+        small_eng.limit(make_order("buyer   ", 100, 1, 'B'));
+    }
+    EXPECT_EQ(execs.size(), 1000u);
+}
+
+TEST_F(EngineTest, SerializeAfterCancelReportsCorrectBestBid) {
+    t_orderid id100 = eng_.limit(make_order("buyer1  ", 100, 5, 'B'));
+    eng_.limit(make_order("buyer2  ",  99, 5, 'B'));
+    eng_.cancel(id100);
+
+    std::string snap = eng_.serialize();
+
+    MatchEngine eng2([](const Execution&) {});
+    eng2.restore(snap);
+
+    EXPECT_EQ(eng2.best_bid(), 99);
+    EXPECT_EQ(eng2.best_bid_qty(), 5u);
+    // No resting order at 100
+    EXPECT_EQ(eng2.best_ask(), 0);
+}

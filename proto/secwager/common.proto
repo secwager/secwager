@@ -42,11 +42,16 @@ enum OrderStatusType {
   CANCELLED = 2;  // resting order removed; remaining_size = qty that was still resting
 }
 
+enum RejectReason {
+  REJECT_REASON_UNSPECIFIED = 0;  // internal/unknown error
+  ORDER_ALREADY_FILLED      = 1;  // cancel arrived after order fully filled
+}
+
 message OrderStatus {
   string          symbol         = 1;
   string          trader         = 2;
   uint32          order_id       = 3;  // assigned t_orderid; 0 if REJECTED
   OrderStatusType status         = 4;
   uint32          remaining_size = 5;  // qty still resting after this event
-  string          reject_reason  = 6;  // set only when status=REJECTED
+  RejectReason    reject_reason  = 6;  // set only when status=REJECTED
 }

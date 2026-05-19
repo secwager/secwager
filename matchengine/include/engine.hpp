@@ -53,6 +53,10 @@ public:
     t_price best_bid() const;
     t_price best_ask() const;
 
+    // Total resting size at the best bid/ask price (0 if no resting orders).
+    t_size best_bid_qty() const;
+    t_size best_ask_qty() const;
+
 private:
     struct OrderEntry {
         char      trader[8];
@@ -74,7 +78,7 @@ private:
 
     ExecCallback on_exec_;
 
-    // Heap-allocated: combined ~21 MB, far too large for the stack.
+    
     std::vector<PriceLevel> bids_;  // size MAX_PRICE, buy side indexed by price
     std::vector<PriceLevel> asks_;  // size MAX_PRICE, sell side indexed by price
     std::vector<OrderEntry> pool_;  // size MAX_ORDERS; pool_[0] is the NONE sentinel

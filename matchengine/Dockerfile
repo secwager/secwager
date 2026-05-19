@@ -8,11 +8,13 @@ ENV VCPKG_ROOT=/opt/vcpkg
 RUN git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT && \
     $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
 
+ARG JOBS=6
+
 COPY . /src
 WORKDIR /src
 
 RUN cmake --preset default -DCMAKE_BUILD_TYPE=Release -B build && \
-    cmake --build build --parallel
+    cmake --build build --parallel ${JOBS}
 
 FROM builder AS test
 RUN ctest --test-dir /src/build --output-on-failure

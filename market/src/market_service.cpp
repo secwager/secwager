@@ -90,6 +90,7 @@ MatchEngine& MarketService::engine_for(const std::string& symbol) {
                 rpt.set_size(e.size);
                 publish(cfg_.exec_topic, sym, rpt);
 
+                last_price_[sym] = e.price;
                 if (fill_accumulator_) *fill_accumulator_ += e.size;
             });
     }
@@ -99,18 +100,23 @@ MatchEngine& MarketService::engine_for(const std::string& symbol) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 MarketService::TopOfBook MarketService::snapshot_tob(MatchEngine& eng) const {
-    return {eng.best_bid(), eng.best_ask()};
+    return {eng.best_bid(), eng.best_ask(), eng.best_bid_qty(), eng.best_ask_qty()};
 }
 
 void MarketService::maybe_publish_depth(const std::string& symbol,
                                          MatchEngine& eng, TopOfBook before) {
     TopOfBook after = snapshot_tob(eng);
-    if (after.bid == before.bid && after.ask == before.ask) return;
+    if (after.bid == before.bid && after.ask == before.ask &&
+        after.bid_qty == before.bid_qty && after.ask_qty == before.ask_qty) return;
 
     market::DepthUpdate du;
     du.set_symbol(symbol);
     du.set_best_bid(after.bid);
     du.set_best_ask(after.ask);
+    du.set_best_bid_qty(after.bid_qty);
+    du.set_best_ask_qty(after.ask_qty);
+    auto lp_it = last_price_.find(symbol);
+    if (lp_it != last_price_.end()) du.set_last_price(lp_it->second);
     publish(cfg_.depth_topic, symbol, du);
 }
 
@@ -143,6 +149,17 @@ void MarketService::handle_new_order(const std::string& symbol,
     MatchEngine& eng = engine_for(symbol);
     auto before = snapshot_tob(eng);
 
+    secwager::OrderStatus status;
+    status.set_symbol(symbol);
+    status.set_trader(o.trader());
+
+    if (o.price() == 0 || o.price() > 65535) {
+        status.set_status(secwager::REJECTED);
+        status.set_reject_reason(secwager::REJECT_REASON_UNSPECIFIED);
+        publish(cfg_.status_topic, symbol, status);
+        return;
+    }
+
     Order order{};
     std::memset(order.trader, 0, 8);
     std::memcpy(order.trader, o.trader().data(),
@@ -150,10 +167,6 @@ void MarketService::handle_new_order(const std::string& symbol,
     order.price = static_cast<t_price>(o.price());
     order.size  = static_cast<t_size>(o.size());
     order.side  = (o.side() == secwager::SELL) ? 'S' : 'B';
-
-    secwager::OrderStatus status;
-    status.set_symbol(symbol);
-    status.set_trader(o.trader());
 
     try {
         t_size total_filled = 0;
@@ -169,7 +182,7 @@ void MarketService::handle_new_order(const std::string& symbol,
     } catch (const std::exception& ex) {
         fill_accumulator_ = nullptr;
         status.set_status(secwager::REJECTED);
-        status.set_reject_reason(ex.what());
+        status.set_reject_reason(secwager::REJECT_REASON_UNSPECIFIED);
     }
 
     publish(cfg_.status_topic, symbol, status);
@@ -195,6 +208,12 @@ void MarketService::handle_cancel(const std::string& symbol,
     auto& sym_remaining = order_remaining_[symbol];
     auto rem_it = sym_remaining.find(cr.order_id());
     if (rem_it != sym_remaining.end()) {
+        if (rem_it->second == 0) {
+            status.set_status(secwager::REJECTED);
+            status.set_reject_reason(secwager::ORDER_ALREADY_FILLED);
+            publish(cfg_.status_topic, symbol, status);
+            return;  // no depth change possible; skip eng.cancel()
+        }
         status.set_remaining_size(rem_it->second);
         sym_remaining.erase(rem_it);
     }

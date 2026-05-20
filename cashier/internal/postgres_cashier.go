@@ -8,9 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/protobuf/proto"
-
-	pb "github.com/secwager/secwager/cashier/gen/cashier"
 )
 
 type PostgresCashier struct {
@@ -28,7 +25,7 @@ func (c *PostgresCashier) Deposit(ctx context.Context, userID, idempotencyKey st
 	if idempotencyKey == "" {
 		return AccountSnapshot{}, fmt.Errorf("idempotency_key is required")
 	}
-	return c.withIdempotency(ctx, idempotencyKey, func(tx pgx.Tx) (AccountSnapshot, error) {
+	return c.withIdempotency(ctx, userID, idempotencyKey, func(tx pgx.Tx) (AccountSnapshot, error) {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO accounts (user_id, gross_balance, escrowed, version)
 			VALUES ($1, $2, 0, 0)
@@ -51,7 +48,7 @@ func (c *PostgresCashier) Withdraw(ctx context.Context, userID, idempotencyKey s
 	if idempotencyKey == "" {
 		return AccountSnapshot{}, fmt.Errorf("idempotency_key is required")
 	}
-	return c.withIdempotency(ctx, idempotencyKey, func(tx pgx.Tx) (AccountSnapshot, error) {
+	return c.withIdempotency(ctx, userID, idempotencyKey, func(tx pgx.Tx) (AccountSnapshot, error) {
 		var grossBalance, escrowed, version int64
 		err := tx.QueryRow(ctx,
 			`SELECT gross_balance, escrowed, version FROM accounts WHERE user_id = $1 FOR UPDATE`,
@@ -217,55 +214,42 @@ func (c *PostgresCashier) CheckAvailable(ctx context.Context, userID string) (Ac
 }
 
 // withIdempotency wraps fn in a transaction with idempotency key deduplication.
-func (c *PostgresCashier) withIdempotency(ctx context.Context, key string, fn func(pgx.Tx) (AccountSnapshot, error)) (AccountSnapshot, error) {
+// On a cache hit it returns the current account state (not the frozen post-op snapshot)
+// so the caller always sees live balances, and sets IsReplay=true so they can distinguish
+// a retry from a fresh execution.
+func (c *PostgresCashier) withIdempotency(ctx context.Context, userID, key string, fn func(pgx.Tx) (AccountSnapshot, error)) (AccountSnapshot, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return AccountSnapshot{}, err
 	}
 	defer tx.Rollback(ctx)
 
-	// Keys are permanent — a UUID maps to exactly one result forever. Expiring a key
-	// risks re-executing a financial operation on a delayed retry, which is worse than
-	// table growth. Housekeeping (purge by created_at after a long horizon) is a
-	// separate operational concern and does not affect in-window retries.
-	// We do not fingerprint request parameters; mismatched params on a retry are
-	// silently ignored in favour of the original result — intentional for an
-	// internal service where callers own their key generation.
-	var rawResp []byte
+	// Anchor the key atomically. The loser of a concurrent first-timer race blocks
+	// until the winner commits, then sees ErrNoRows from RETURNING (no row returned
+	// means the conflict branch fired — key already exists).
+	var inserted bool
 	err = tx.QueryRow(ctx,
-		`SELECT response FROM idempotency_keys WHERE key = $1 FOR UPDATE`, key).
-		Scan(&rawResp)
+		`INSERT INTO idempotency_keys (key) VALUES ($1) ON CONFLICT (key) DO NOTHING RETURNING true`, key).
+		Scan(&inserted)
 
-	if err == nil {
-		var cached pb.CashierResponse
-		if err := proto.Unmarshal(rawResp, &cached); err != nil {
-			return AccountSnapshot{}, fmt.Errorf("unmarshal cached response: %w", err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Key already exists — this operation ran before. Return current account state.
+		var snap AccountSnapshot
+		if err = tx.QueryRow(ctx,
+			`SELECT gross_balance, escrowed FROM accounts WHERE user_id = $1`, userID).
+			Scan(&snap.GrossBalance, &snap.Escrowed); err != nil {
+			return AccountSnapshot{}, fmt.Errorf("idempotency replay: %w", err)
 		}
-		return AccountSnapshot{GrossBalance: cached.GrossBalance, Escrowed: cached.Escrowed}, nil
+		snap.IsReplay = true
+		return snap, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return AccountSnapshot{}, fmt.Errorf("idempotency select: %w", err)
+	if err != nil {
+		return AccountSnapshot{}, fmt.Errorf("idempotency insert: %w", err)
 	}
 
 	snap, err := fn(tx)
 	if err != nil {
-		return AccountSnapshot{}, err
-	}
-
-	// Persist the response so retries get the same answer.
-	encoded, err := proto.Marshal(&pb.CashierResponse{
-		GrossBalance: snap.GrossBalance,
-		Escrowed:     snap.Escrowed,
-	})
-	if err != nil {
-		return AccountSnapshot{}, fmt.Errorf("marshal idempotency response: %w", err)
-	}
-	_, err = tx.Exec(ctx,
-		`INSERT INTO idempotency_keys (key, response) VALUES ($1, $2)
-		 ON CONFLICT (key) DO NOTHING`,
-		key, encoded)
-	if err != nil {
-		return AccountSnapshot{}, fmt.Errorf("idempotency insert: %w", err)
+		return AccountSnapshot{}, err // rolls back key INSERT too
 	}
 
 	if err := tx.Commit(ctx); err != nil {

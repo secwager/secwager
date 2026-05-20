@@ -21,14 +21,14 @@ type FakeCashier struct {
 	mu              sync.Mutex
 	accounts        map[string]*fakeAccount
 	escrows         map[uint32]fakeEscrow
-	idempotencyKeys map[string]AccountSnapshot
+	idempotencyKeys map[string]struct{}
 }
 
 func NewFakeCashier() *FakeCashier {
 	return &FakeCashier{
 		accounts:        make(map[string]*fakeAccount),
 		escrows:         make(map[uint32]fakeEscrow),
-		idempotencyKeys: make(map[string]AccountSnapshot),
+		idempotencyKeys: make(map[string]struct{}),
 	}
 }
 
@@ -42,13 +42,15 @@ func (f *FakeCashier) Deposit(ctx context.Context, userID, idempotencyKey string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if snap, ok := f.idempotencyKeys[idempotencyKey]; ok {
+	if _, ok := f.idempotencyKeys[idempotencyKey]; ok {
+		snap := f.snapshot(f.getOrCreate(userID))
+		snap.IsReplay = true
 		return snap, nil
 	}
 	acc := f.getOrCreate(userID)
 	acc.grossBalance += amount
 	snap := f.snapshot(acc)
-	f.idempotencyKeys[idempotencyKey] = snap
+	f.idempotencyKeys[idempotencyKey] = struct{}{}
 	return snap, nil
 }
 
@@ -62,7 +64,9 @@ func (f *FakeCashier) Withdraw(ctx context.Context, userID, idempotencyKey strin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if snap, ok := f.idempotencyKeys[idempotencyKey]; ok {
+	if _, ok := f.idempotencyKeys[idempotencyKey]; ok {
+		snap := f.snapshot(f.accounts[userID])
+		snap.IsReplay = true
 		return snap, nil
 	}
 	acc, ok := f.accounts[userID]
@@ -76,7 +80,7 @@ func (f *FakeCashier) Withdraw(ctx context.Context, userID, idempotencyKey strin
 	}
 	acc.grossBalance -= amount
 	snap := f.snapshot(acc)
-	f.idempotencyKeys[idempotencyKey] = snap
+	f.idempotencyKeys[idempotencyKey] = struct{}{}
 	return snap, nil
 }
 

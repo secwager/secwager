@@ -38,7 +38,9 @@ message CheckRequest {
 }
 
 // Returned by every RPC. Spendable = gross_balance - escrowed.
+// is_replay is true when the request was deduplicated via an idempotency key.
 message CashierResponse {
     int64 gross_balance = 1;
     int64 escrowed      = 2;
+    bool  is_replay     = 3;
 }

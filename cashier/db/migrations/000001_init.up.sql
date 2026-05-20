@@ -17,6 +17,5 @@ CREATE INDEX idx_escrow_user ON escrow_entries(user_id);
 
 CREATE TABLE idempotency_keys (
     key        TEXT        PRIMARY KEY,
-    response   BYTEA       NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

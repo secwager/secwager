@@ -1,7 +1,7 @@
 syntax = "proto3";
 package cashier;
 
-option go_package = "github.com/secwager/secwager/cashier/gen/cashier";
+option go_package = "github.com/secwager/secwager/proto/gen/cashier";
 
 service CashierService {
     rpc Deposit       (DepositRequest)       returns (CashierResponse);

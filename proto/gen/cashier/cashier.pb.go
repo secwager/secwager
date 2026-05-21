@@ -381,7 +381,7 @@ const file_cashier_cashier_proto_rawDesc = "" +
 	"\bWithdraw\x12\x18.cashier.WithdrawRequest\x1a\x18.cashier.CashierResponse\x12:\n" +
 	"\x06Escrow\x12\x16.cashier.EscrowRequest\x1a\x18.cashier.CashierResponse\x12H\n" +
 	"\rReleaseEscrow\x12\x1d.cashier.ReleaseEscrowRequest\x1a\x18.cashier.CashierResponse\x12A\n" +
-	"\x0eCheckAvailable\x12\x15.cashier.CheckRequest\x1a\x18.cashier.CashierResponseB2Z0github.com/secwager/secwager/cashier/gen/cashierb\x06proto3"
+	"\x0eCheckAvailable\x12\x15.cashier.CheckRequest\x1a\x18.cashier.CashierResponseB0Z.github.com/secwager/secwager/proto/gen/cashierb\x06proto3"
 
 var (
 	file_cashier_cashier_proto_rawDescOnce sync.Once

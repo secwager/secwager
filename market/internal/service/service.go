@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	me "github.com/secwager/secwager/matchengine"
 	market_pb "github.com/secwager/secwager/proto/gen/market"
@@ -19,7 +20,10 @@ type Config struct {
 	ExecTopic  string // order_executions (publish, sync)
 	DepthTopic string // depth_updates (publish, async)
 	DataDir    string
-	FlushEvery int // snapshot every N messages (default 1000)
+	FlushEvery int           // snapshot every N messages (default 1000)
+	MinBytes   int           // min fetch batch size (default 256 KB)
+	MaxBytes   int           // max fetch batch size (default 10 MB)
+	MaxWait    time.Duration // max wait for MinBytes (default 500ms)
 
 	// Test hook: replaces Kafka publish when non-nil.
 	Publisher func(topic, key string, payload []byte)
@@ -41,6 +45,15 @@ func New(cfg Config) *MarketService {
 	if cfg.FlushEvery == 0 {
 		cfg.FlushEvery = 1000
 	}
+	if cfg.MinBytes == 0 {
+		cfg.MinBytes = 256 << 10
+	}
+	if cfg.MaxBytes == 0 {
+		cfg.MaxBytes = 10 << 20
+	}
+	if cfg.MaxWait == 0 {
+		cfg.MaxWait = 500 * time.Millisecond
+	}
 	s := &MarketService{
 		cfg:     cfg,
 		engines: make(map[string]*me.OrderBook),
@@ -61,7 +74,7 @@ func (s *MarketService) Run(ctx context.Context) error {
 	s.offset = offset
 
 	for symbol, state := range books {
-		eng := s.engineFor(symbol)
+		eng := s.bookFor(symbol)
 		eng.Restore(state)
 	}
 
@@ -69,8 +82,9 @@ func (s *MarketService) Run(ctx context.Context) error {
 		Brokers:   s.cfg.Brokers,
 		Topic:     s.cfg.Topic,
 		Partition: s.cfg.Partition,
-		MinBytes:  1,
-		MaxBytes:  10 << 20,
+		MinBytes:  s.cfg.MinBytes,
+		MaxBytes:  s.cfg.MaxBytes,
+		MaxWait:   s.cfg.MaxWait,
 	})
 	defer s.reader.Close()
 
@@ -146,7 +160,7 @@ func (s *MarketService) dispatchMessage(msg kafka.Message) {
 }
 
 func (s *MarketService) processCommand(symbol string, cmd *secwager_pb.MarketCommand) {
-	eng := s.engineFor(symbol)
+	book := s.bookFor(symbol)
 	var events []me.Event
 	switch c := cmd.Command.(type) {
 	case *secwager_pb.MarketCommand_NewOrder:
@@ -157,9 +171,9 @@ func (s *MarketService) processCommand(symbol string, cmd *secwager_pb.MarketCom
 		if o.Side == secwager_pb.Side_SELL {
 			side = me.Sell
 		}
-		_, events = eng.Limit(me.Order{Trader: t, Price: me.Price(o.Price), Size: me.Size(o.Size), Side: side})
+		_, events = book.Limit(me.Order{Trader: t, Price: me.Price(o.Price), Size: me.Size(o.Size), Side: side})
 	case *secwager_pb.MarketCommand_Cancel:
-		events = eng.Cancel(me.OrderID(c.Cancel.OrderId))
+		events = book.Cancel(me.OrderID(c.Cancel.OrderId))
 	}
 
 	if !s.live {
@@ -243,7 +257,7 @@ func (s *MarketService) publishAsync(topic, key string, msg proto.Message) {
 	}
 }
 
-func (s *MarketService) engineFor(symbol string) *me.OrderBook {
+func (s *MarketService) bookFor(symbol string) *me.OrderBook {
 	if eng, ok := s.engines[symbol]; ok {
 		return eng
 	}

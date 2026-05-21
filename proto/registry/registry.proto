@@ -1,0 +1,187 @@
+syntax = "proto3";
+package registry;
+option go_package = "github.com/secwager/secwager/proto/gen/registry";
+
+service RegistryService {
+  // Reference data — open reads
+  rpc GetTeam             (GetTeamRequest)             returns (GetTeamResponse);
+  rpc GetGame             (GetGameRequest)             returns (GetGameResponse);
+  rpc GetPlayer           (GetPlayerRequest)           returns (GetPlayerResponse);
+  rpc ListTeams           (ListTeamsRequest)           returns (ListTeamsResponse);
+  rpc ListGames           (ListGamesRequest)           returns (ListGamesResponse);
+  rpc ListPlayersByGame   (ListPlayersByGameRequest)   returns (ListPlayersByGameResponse);
+  rpc GetAllowedPropTypes (GetAllowedPropTypesRequest) returns (GetAllowedPropTypesResponse);
+
+  // Instruments — write requires auth (interceptor deferred)
+  rpc CreateInstrument    (CreateInstrumentRequest)    returns (CreateInstrumentResponse);
+  rpc GetInstrument       (GetInstrumentRequest)       returns (GetInstrumentResponse);
+  rpc ListInstruments     (ListInstrumentsRequest)     returns (ListInstrumentsResponse);
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum League {
+  LEAGUE_UNSPECIFIED = 0;
+  MLB                = 1;
+  NFL                = 2;
+  EPL                = 3;
+  LA_LIGA            = 4;
+  MLS                = 5;
+}
+
+enum Position {
+  POSITION_UNSPECIFIED = 0;
+  MLB_PITCHER          = 1;
+  MLB_BATTER           = 2;
+  SOCCER_GOALKEEPER    = 10;
+  SOCCER_DEFENDER      = 11;
+  SOCCER_MIDFIELDER    = 12;
+  SOCCER_FORWARD       = 13;
+  NFL_QB               = 20;
+  NFL_RB               = 21;
+  NFL_WR               = 22;
+  NFL_TE               = 23;
+  NFL_DEF              = 24;
+}
+
+enum PropType {
+  PROP_UNSPECIFIED  = 0;
+  HOMERUNS          = 1;
+  STRIKEOUTS        = 2;
+  HITS              = 3;
+  RBIS              = 4;
+  WALKS             = 5;
+  EARNED_RUNS       = 6;
+  GOALS             = 20;
+  ASSISTS           = 21;
+  SAVES             = 22;
+  YELLOW_CARDS      = 23;
+  PASSING_YARDS     = 40;
+  RUSHING_YARDS     = 41;
+  RECEIVING_YARDS   = 42;
+  TOUCHDOWNS        = 43;
+  INTERCEPTIONS     = 44;
+}
+
+enum Comparator {
+  CMP_UNSPECIFIED = 0;
+  GT              = 1;
+  GTE             = 2;
+  LT              = 3;
+  LTE             = 4;
+  EQ              = 5;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  HOME_WIN            = 1;
+  HOME_LOSS           = 2;
+  DRAW                = 3;
+}
+
+// ── Reference data messages ──────────────────────────────────────────────────
+
+message Team {
+  string id         = 1;
+  string name       = 2;
+  string short_name = 3;
+  League league     = 4;
+}
+
+message Player {
+  string            id        = 1;
+  string            name      = 2;
+  string            team_id   = 3;
+  repeated Position positions = 4;
+}
+
+message Game {
+  string id             = 1;
+  League league         = 2;
+  string home_team_id   = 3;
+  string away_team_id   = 4;
+  int64  scheduled_unix = 5;
+  int64  expiry_unix    = 6;
+}
+
+// ── Instrument / expression messages ─────────────────────────────────────────
+
+message GameOutcome {
+  Outcome outcome = 1;
+}
+
+message PlayerProp {
+  string     player_id  = 1;
+  PropType   prop_type  = 2;
+  Comparator comparator = 3;
+  int64      threshold  = 4;
+}
+
+message Leg {
+  string game_id = 1;
+  oneof predicate {
+    GameOutcome game_outcome = 2;
+    PlayerProp  player_prop  = 3;
+  }
+}
+
+// An instrument is a flat AND of all legs — all must resolve true.
+message Instrument {
+  string       instrument_id = 1;
+  repeated Leg legs          = 2;
+  int64        expiry_unix   = 3;
+}
+
+// ── Reference data RPCs ──────────────────────────────────────────────────────
+
+message GetTeamRequest            { string id = 1; }
+message GetTeamResponse           { Team team = 1; }
+
+message GetGameRequest            { string id = 1; }
+message GetGameResponse           { Game game = 1; }
+
+message GetPlayerRequest          { string id = 1; }
+message GetPlayerResponse         { Player player = 1; }
+
+message ListTeamsRequest          { League league = 1; }
+message ListTeamsResponse         { repeated Team teams = 1; }
+
+message ListGamesRequest {
+  League league    = 1;
+  int64  from_unix = 2;
+  int64  to_unix   = 3;
+}
+message ListGamesResponse         { repeated Game games = 1; }
+
+message ListPlayersByGameRequest  { string game_id = 1; }
+message ListPlayersByGameResponse { repeated Player players = 1; }
+
+message GetAllowedPropTypesRequest {
+  League   league   = 1;
+  Position position = 2;
+}
+message GetAllowedPropTypesResponse { repeated PropType prop_types = 1; }
+
+// ── Instrument RPCs ──────────────────────────────────────────────────────────
+
+message CreateInstrumentRequest { repeated Leg legs = 1; }
+message CreateInstrumentResponse {
+  string instrument_id   = 1;
+  int64  expiry_unix     = 2;
+  bool   already_existed = 3;
+}
+
+message GetInstrumentRequest  { string instrument_id = 1; }
+message GetInstrumentResponse { Instrument instrument = 1; }
+
+message ListInstrumentsRequest {
+  string entity_id   = 1;
+  League league      = 2;
+  bool   active_only = 3;
+  int32  page_size   = 4;
+  string page_token  = 5;
+}
+message ListInstrumentsResponse {
+  repeated Instrument instruments    = 1;
+  string              next_page_token = 2;
+}

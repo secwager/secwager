@@ -1,0 +1,37 @@
+{
+  "teams": [
+    {"id": "EPL::ARS", "name": "Arsenal",            "short_name": "ARS", "league": "EPL"},
+    {"id": "EPL::MCI", "name": "Manchester City",     "short_name": "MCI", "league": "EPL"},
+    {"id": "MLB::NYY", "name": "New York Yankees",    "short_name": "NYY", "league": "MLB"},
+    {"id": "MLB::LAD", "name": "Los Angeles Dodgers", "short_name": "LAD", "league": "MLB"}
+  ],
+  "players": [
+    {"id": "MLB::NYY::JUDGE",   "name": "Aaron Judge",    "team_id": "MLB::NYY", "positions": ["MLB_BATTER"]},
+    {"id": "MLB::LAD::OHTANI",  "name": "Shohei Ohtani",  "team_id": "MLB::LAD", "positions": ["MLB_BATTER", "MLB_PITCHER"]},
+    {"id": "EPL::MCI::HAALAND", "name": "Erling Haaland", "team_id": "EPL::MCI", "positions": ["SOCCER_FORWARD"]}
+  ],
+  "games": [
+    {
+      "id": "MLB::NYY@LAD::20270922", "league": "MLB",
+      "home_team_id": "MLB::LAD", "away_team_id": "MLB::NYY",
+      "scheduled_unix": 1790092800, "expiry_unix": 1790107200
+    },
+    {
+      "id": "EPL::ARS@MCI::20250331", "league": "EPL",
+      "home_team_id": "EPL::ARS", "away_team_id": "EPL::MCI",
+      "scheduled_unix": 1743418800, "expiry_unix": 1743432000
+    }
+  ],
+  "prop_type_rules": [
+    {"league": "MLB", "position": "MLB_BATTER",       "allowed": ["HOMERUNS","HITS","RBIS","WALKS"]},
+    {"league": "MLB", "position": "MLB_PITCHER",      "allowed": ["STRIKEOUTS","EARNED_RUNS","WALKS"]},
+    {"league": "EPL", "position": "SOCCER_FORWARD",   "allowed": ["GOALS","ASSISTS","YELLOW_CARDS"]},
+    {"league": "EPL", "position": "SOCCER_MIDFIELDER","allowed": ["GOALS","ASSISTS","YELLOW_CARDS"]},
+    {"league": "EPL", "position": "SOCCER_DEFENDER",  "allowed": ["GOALS","ASSISTS","YELLOW_CARDS"]},
+    {"league": "EPL", "position": "SOCCER_GOALKEEPER","allowed": ["GOALS","ASSISTS","SAVES","YELLOW_CARDS"]},
+    {"league": "NFL", "position": "NFL_QB",           "allowed": ["PASSING_YARDS","TOUCHDOWNS","INTERCEPTIONS"]},
+    {"league": "NFL", "position": "NFL_RB",           "allowed": ["RUSHING_YARDS","TOUCHDOWNS","RECEIVING_YARDS"]},
+    {"league": "NFL", "position": "NFL_WR",           "allowed": ["RECEIVING_YARDS","TOUCHDOWNS"]},
+    {"league": "NFL", "position": "NFL_TE",           "allowed": ["RECEIVING_YARDS","TOUCHDOWNS"]}
+  ]
+}

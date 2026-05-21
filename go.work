@@ -4,3 +4,4 @@ use ./cashier
 use ./market
 use ./matchengine
 use ./proto
+use ./registry

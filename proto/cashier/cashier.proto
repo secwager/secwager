@@ -1,6 +1,8 @@
 syntax = "proto3";
 package cashier;
 
+option go_package = "github.com/secwager/secwager/proto/gen/cashier";
+
 service CashierService {
     rpc Deposit       (DepositRequest)       returns (CashierResponse);
     rpc Withdraw      (WithdrawRequest)      returns (CashierResponse);
@@ -9,15 +11,36 @@ service CashierService {
     rpc CheckAvailable(CheckRequest)         returns (CashierResponse);
 }
 
-message DepositRequest       { string trader   = 1; int64  amount   = 2; }
-message WithdrawRequest      { string trader   = 1; int64  amount   = 2; }
-message EscrowRequest        { string trader   = 1; uint32 order_id = 2; int64 amount = 3; }
-message ReleaseEscrowRequest { uint32 order_id = 1; }
-message CheckRequest         { string trader   = 1; }
+message DepositRequest {
+    string user_id          = 1;
+    int64  amount           = 2;
+    string idempotency_key  = 3;
+}
 
-// Returned by every RPC: full account snapshot after the operation.
+message WithdrawRequest {
+    string user_id          = 1;
+    int64  amount           = 2;
+    string idempotency_key  = 3;
+}
+
+message EscrowRequest {
+    string user_id   = 1;
+    uint32 order_id  = 2;
+    int64  amount    = 3;
+}
+
+message ReleaseEscrowRequest {
+    uint32 order_id = 1;
+}
+
+message CheckRequest {
+    string user_id = 1;
+}
+
+// Returned by every RPC. Spendable = gross_balance - escrowed.
+// is_replay is true when the request was deduplicated via an idempotency key.
 message CashierResponse {
-    int64 balance   = 1;  // total deposited (gross)
-    int64 locked    = 2;  // currently escrowed
-    int64 available = 3;  // balance - locked
+    int64 gross_balance = 1;
+    int64 escrowed      = 2;
+    bool  is_replay     = 3;
 }

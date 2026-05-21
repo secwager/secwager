@@ -4,78 +4,115 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**secwager** is a binary options trading platform built as a set of independent C++20 services. Each module is a self-contained CMake project with its own `vcpkg.json` and `CMakePresets.json`. There is no top-level CMake; build each module independently.
+**secwager** is a binary options trading platform built as a set of independent Go modules sharing a single `go.work` workspace. Each module is self-contained with its own `go.mod`.
 
 ## Build System
 
-Each module uses CMake + vcpkg + Ninja. `VCPKG_ROOT` must be set in the environment.
-
 ```bash
-# Build any module (same pattern for matchengine/, market/, cashier/)
-cd <module>
-cmake --preset default
-cmake --build build
+# Run unit tests for all modules
+go test ./cashier/... ./matchengine/... ./market/...
 
-# Run all unit tests
-cd build && ctest --output-on-failure
-
-# Run a single test binary directly
-./build/engine_test                   # matchengine
-./build/market_test                   # market
-./build/cashier_test                  # cashier (unit, no external deps)
+# Run unit tests for a specific module
+go test github.com/secwager/secwager/matchengine/...
+go test github.com/secwager/secwager/market/internal/service
+go test github.com/secwager/secwager/cashier/internal/...
 
 # Run integration tests (requires Docker)
-cd cashier
-docker compose run --rm integration-test
+TESTCONTAINERS_RYUK_DISABLED=true go test -tags integration \
+  github.com/secwager/secwager/cashier/internal/... -timeout 120s
+TESTCONTAINERS_RYUK_DISABLED=true go test -tags integration \
+  github.com/secwager/secwager/market/internal/service -timeout 180s
+
+# Build binaries
+go build github.com/secwager/secwager/cashier/cmd/cashier
+go build github.com/secwager/secwager/market/cmd/market
+
+# Regenerate all proto stubs (run from repo root)
+PATH=$PATH:$HOME/go/bin protoc \
+  --go_out=proto/gen --go_opt=paths=source_relative \
+  -I proto \
+  secwager/common.proto secwager/book_snapshot.proto
+
+PATH=$PATH:$HOME/go/bin protoc \
+  --go_out=proto/gen --go_opt=paths=source_relative \
+  --go-grpc_out=proto/gen --go-grpc_opt=paths=source_relative \
+  -I proto cashier/cashier.proto
+
+PATH=$PATH:$HOME/go/bin protoc \
+  --go_out=proto/gen --go_opt=paths=source_relative \
+  -I proto \
+  market/market.proto market/market_snapshot.proto
 ```
 
 ## Module Structure
 
 ```
-proto/              — shared protobuf messages (no gRPC; consumed by all modules)
-matchengine/        — price-time-priority match engine (static library + binary)
-market/             — Kafka consumer/producer wrapping the match engine (gRPC-free)
-cashier/            — gRPC service for trader balance management (Postgres + etcd)
+go.work             — workspace root; lists all modules
+proto/              — all .proto sources + generated Go stubs (proto/gen/)
+matchengine/        — pure Go matching library; no I/O, no external deps
+market/             — Kafka consumer binary wrapping matchengine
+cashier/            — gRPC service for trader balance management (Postgres)
 ```
 
 ### proto/
-Single CMake target `secwager_proto` generating C++ from:
-- `secwager/common.proto` — core trading messages: `Order`, `CancelRequest`, `MarketCommand`, `Execution`, `OrderStatus`
-- `secwager/book_snapshot.proto` — serialized order book for engine restore
-- `cashier/cashier.proto` — cashier gRPC service definition (message types only; stubs are generated inside the cashier module because gRPC is a cashier-only dependency)
+Single Go module (`github.com/secwager/secwager/proto`). All `.proto` sources live here; generated stubs go into `proto/gen/`. Other modules reference the stubs via `replace` directives pointing to `../proto`.
 
-Each module adds `proto/` via `add_subdirectory` with a guard (`if(NOT TARGET secwager_proto)`) to prevent double-registration when market pulls in matchengine, which also references proto.
+- `secwager/common.proto` — `Order`, `CancelRequest`, `MarketCommand`, `ExecutionReport`, `ExecType`, `RejectReason`
+- `secwager/book_snapshot.proto` — serialized order book for snapshot/restore
+- `cashier/cashier.proto` — cashier gRPC service + message types
+- `market/market.proto` — `DepthUpdate`
+- `market/market_snapshot.proto` — `MarketSnapshot` (offset + per-symbol books, written atomically)
 
 ### matchengine/
-Price-time-priority FIFO limit order book. Fixed-size array-backed pool (`MAX_ORDERS = 1M`), array-indexed price levels (`MAX_PRICE = 65536`), covering uint16_t prices for binary options (1–65535). No Kafka, no gRPC — pure matching logic. Supports `serialize()`/`restore()` via protobuf bytes for snapshot/recovery.
+Pure Go limit order book. Fixed-size pool (`MaxOrders = 1M`), array-indexed price levels (`MaxPrice = 65536`), price-time FIFO. No Kafka, no proto, no goroutines — single-threaded per book. Callback-driven via `Callbacks` struct; nil fields are no-ops.
+
+Key types: `OrderBook`, `Order`, `OrderEvent`, `BookState`, `Callbacks`, `ExecType` (`ExecNew`, `ExecTraded`, `ExecCancelled`, `ExecRejected`), `RejectReason`.
 
 ### market/
-Stateless Kafka consumer loop (`incoming_orders` topic) wrapping one `MatchEngine` per symbol. Publishes to three topics: `executions`, `order_status`, `depth_updates`. The `ServiceConfig::test_publisher` hook bypasses Kafka in unit tests — use `MarketService::process()` to inject commands directly. Dependencies: librdkafka, protobuf.
+Kafka consumer binary. One `OrderBook` per symbol, keyed by the Kafka message key. Manual partition assignment via `MARKET_CARDINAL` — no consumer group, no rebalancing. Offset self-managed on disk inside `MarketSnapshot`. On startup: restore from snapshot, replay to HWM with nil callbacks, then go live. Snapshot written atomically (tmp + rename) on shutdown and every `FlushEvery` messages.
+
+Publishes `ExecutionReport` to `order_executions` and `DepthUpdate` to `depth_updates`.
+
+Unit tests use `Config.Publisher` hook (no Kafka). Integration tests use Redpanda via testcontainers.
 
 ### cashier/
-Standalone gRPC service (port 50051). `ICashier` interface (`cashier/include/icashier.hpp`) is the only public API — `PostgresCashier` is the sole concrete implementation. Per-account distributed locking via etcd (`/cashier/lock/<trader_id>`). Connection pooling via `pqxx::connection_pool` (built into libpqxx 7+). Schema managed by Liquibase YAML in `cashier/db/`; migrations run automatically in docker-compose. Integration tests spin up Postgres + etcd via the Docker CLI (not mocks).
+Standalone gRPC service (port 50051). `Cashier` interface in `cashier/internal/cashier.go`; `PostgresCashier` is the production implementation. Operations: `Deposit`, `Withdraw`, `Escrow`, `ReleaseEscrow`, `CheckAvailable`. All mutating ops are idempotent via `idempotency_keys` table. Schema managed by `golang-migrate` SQL files in `cashier/db/migrations/`.
+
+Unit tests use `FakeCashier`. Integration tests use testcontainers (Postgres).
 
 ## Key Design Decisions
 
-- **ICashier is product-agnostic.** `escrow(trader, order_id, amount)` takes a caller-computed lock amount. Binary options liability math (max 100 - price) belongs in the order gateway, not the cashier.
-- **Synchronous gRPC handlers.** Each handler blocks on libpqxx directly. Concurrency comes from gRPC's thread pool + `pqxx::connection_pool`. No Boost.Asio or async gRPC.
-- **No ISqlRepository abstraction.** Different DB backends mean different `ICashier` implementations, not a swappable repo layer.
-- **Proto lives in `proto/`, not inside modules.** Exception: `market/proto/market.proto` is market-specific (`DepthUpdate`) and generated locally.
-- **cashier gRPC stubs are generated in cashier/, not proto/.** gRPC is a cashier-only dependency; `proto/CMakeLists.txt` uses only `protobuf_generate` (no grpc plugin).
+- **Cashier is product-agnostic.** `Escrow(userID, orderID, amount)` takes a caller-computed amount. Binary options liability math belongs in the order gateway.
+- **All protos in one place.** `proto/` is the single module for all `.proto` sources and generated Go stubs. No per-module gen directories.
+- **matchengine has zero external dependencies.** It is a pure library — no Kafka, no proto, no I/O. The market layer owns all that.
+- **Manual Kafka partition assignment.** `MARKET_CARDINAL` pins each market instance to a specific partition. No consumer group means no rebalancing on a stateful in-memory book.
+- **Callbacks suppressed during replay.** `s.live = false` until replay is complete; all `OnOrder`/`OnBBOChange` closures are no-ops during startup replay to prevent duplicate output messages.
+- **Atomic snapshots.** `MarketSnapshot` proto written to `.tmp` then renamed — POSIX rename is atomic, ensuring offset and book state are always consistent.
+- **Idempotency via presence, not cached responses.** Cashier `idempotency_keys` is a presence-only table. On a cache hit, the current account state is returned with `is_replay=true`; no frozen response stored.
 
 ## Kafka Topics
 
 | Topic | Producer | Consumer |
 |---|---|---|
 | `incoming_orders` | order_gateway (external) | market |
-| `executions` | market | risk, reporting |
-| `order_status` | market | order_gateway |
+| `order_executions` | market | risk, reporting, order_gateway |
 | `depth_updates` | market | market data clients |
 
-## cashier Environment Variables
+## Environment Variables
 
+### cashier
 | Variable | Example |
 |---|---|
 | `CASHIER_PG_DSN` | `host=localhost dbname=cashier user=cashier password=cashier` |
-| `CASHIER_ETCD_ENDPOINTS` | `http://localhost:2379` |
 | `CASHIER_LISTEN_ADDR` | `0.0.0.0:50051` |
+
+### market
+| Variable | Default | Description |
+|---|---|---|
+| `KAFKA_BROKERS` | (required) | Comma-separated broker list |
+| `MARKET_CARDINAL` | (required) | Partition index this instance owns (0-based) |
+| `KAFKA_IN_TOPIC` | `incoming_orders` | Consume topic |
+| `KAFKA_EXEC_TOPIC` | `order_executions` | Publish ExecutionReports |
+| `KAFKA_DEPTH_TOPIC` | `depth_updates` | Publish DepthUpdates |
+| `MARKET_DATA_DIR` | `/data` | Snapshot directory |
+| `MARKET_FLUSH_EVERY` | `1000` | Snapshot interval (messages) |

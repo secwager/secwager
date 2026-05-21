@@ -1,0 +1,12 @@
+syntax = "proto3";
+package market;
+option go_package = "github.com/secwager/secwager/proto/gen/market";
+
+// Published to depth_updates whenever top-of-book changes.
+message DepthUpdate {
+  string symbol       = 1;
+  uint32 best_bid     = 2;  // 0 = no resting bids
+  uint32 best_bid_qty = 3;
+  uint32 best_ask     = 4;  // 0 = no resting asks
+  uint32 best_ask_qty = 5;
+}

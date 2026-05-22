@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -15,12 +14,11 @@ import (
 )
 
 type PostgresCashier struct {
-	pool          *pgxpool.Pool
-	idempotencyTTL time.Duration
+	pool *pgxpool.Pool
 }
 
-func NewPostgresCashier(pool *pgxpool.Pool, idempotencyTTL time.Duration) *PostgresCashier {
-	return &PostgresCashier{pool: pool, idempotencyTTL: idempotencyTTL}
+func NewPostgresCashier(pool *pgxpool.Pool) *PostgresCashier {
+	return &PostgresCashier{pool: pool}
 }
 
 func (c *PostgresCashier) Deposit(ctx context.Context, userID, idempotencyKey string, amount int64) (AccountSnapshot, error) {
@@ -226,30 +224,26 @@ func (c *PostgresCashier) withIdempotency(ctx context.Context, key string, fn fu
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the idempotency key row (or non-existent row) to serialize retries.
+	// Keys are permanent — a UUID maps to exactly one result forever. Expiring a key
+	// risks re-executing a financial operation on a delayed retry, which is worse than
+	// table growth. Housekeeping (purge by created_at after a long horizon) is a
+	// separate operational concern and does not affect in-window retries.
+	// We do not fingerprint request parameters; mismatched params on a retry are
+	// silently ignored in favour of the original result — intentional for an
+	// internal service where callers own their key generation.
 	var rawResp []byte
-	var expiresAt time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT response, expires_at FROM idempotency_keys WHERE key = $1 FOR UPDATE`, key).
-		Scan(&rawResp, &expiresAt)
+		`SELECT response FROM idempotency_keys WHERE key = $1 FOR UPDATE`, key).
+		Scan(&rawResp)
 
 	if err == nil {
-		// Key exists — return cached response if not expired.
-		if time.Now().Before(expiresAt) {
-			if rbErr := tx.Rollback(ctx); rbErr != nil {
-				return AccountSnapshot{}, rbErr
-			}
-			var cached pb.CashierResponse
-			if err := proto.Unmarshal(rawResp, &cached); err != nil {
-				return AccountSnapshot{}, fmt.Errorf("unmarshal cached response: %w", err)
-			}
-			return AccountSnapshot{GrossBalance: cached.GrossBalance, Escrowed: cached.Escrowed}, nil
+		var cached pb.CashierResponse
+		if err := proto.Unmarshal(rawResp, &cached); err != nil {
+			return AccountSnapshot{}, fmt.Errorf("unmarshal cached response: %w", err)
 		}
-		// Expired — delete and re-execute.
-		if _, err := tx.Exec(ctx, `DELETE FROM idempotency_keys WHERE key = $1`, key); err != nil {
-			return AccountSnapshot{}, err
-		}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return AccountSnapshot{GrossBalance: cached.GrossBalance, Escrowed: cached.Escrowed}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return AccountSnapshot{}, fmt.Errorf("idempotency select: %w", err)
 	}
 
@@ -267,9 +261,9 @@ func (c *PostgresCashier) withIdempotency(ctx context.Context, key string, fn fu
 		return AccountSnapshot{}, fmt.Errorf("marshal idempotency response: %w", err)
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO idempotency_keys (key, response, expires_at) VALUES ($1, $2, $3)
-		 ON CONFLICT (key) DO UPDATE SET response = $2, expires_at = $3`,
-		key, encoded, time.Now().Add(c.idempotencyTTL))
+		`INSERT INTO idempotency_keys (key, response) VALUES ($1, $2)
+		 ON CONFLICT (key) DO NOTHING`,
+		key, encoded)
 	if err != nil {
 		return AccountSnapshot{}, fmt.Errorf("idempotency insert: %w", err)
 	}

@@ -16,8 +16,7 @@ CREATE TABLE escrow_entries (
 CREATE INDEX idx_escrow_user ON escrow_entries(user_id);
 
 CREATE TABLE idempotency_keys (
-    key        TEXT         PRIMARY KEY,
-    response   BYTEA        NOT NULL,
-    expires_at TIMESTAMPTZ  NOT NULL
+    key        TEXT        PRIMARY KEY,
+    response   BYTEA       NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_idempotency_expires ON idempotency_keys(expires_at);

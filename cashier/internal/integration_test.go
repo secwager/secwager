@@ -117,7 +117,7 @@ func pgxErrNoRows() error {
 // ── DB-backed cashier tests ────────────────────────────────────────────────
 
 func newCashier() *PostgresCashier {
-	return NewPostgresCashier(testPool, 24*time.Hour)
+	return NewPostgresCashier(testPool)
 }
 
 func TestDB_Deposit_NewUser(t *testing.T) {
@@ -309,6 +309,37 @@ func TestDB_MultipleEscrows(t *testing.T) {
 	}
 }
 
+
+func TestDB_IdempotencyCacheHit_ReleasesRowLock(t *testing.T) {
+	truncateTables(t)
+	c := newCashier()
+	ctx := context.Background()
+
+	c.Deposit(ctx, "alice", "k1", 100)
+
+	// Second call with same key hits the cache and returns early via deferred rollback.
+	snap, err := c.Deposit(ctx, "alice", "k1", 999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GrossBalance != 100 {
+		t.Fatalf("expected cached gross_balance=100, got %+v", snap)
+	}
+
+	// If the deferred rollback didn't release the idempotency_keys row lock,
+	// this Withdraw (which opens its own transaction and acquires FOR UPDATE) would hang.
+	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, err = c.Withdraw(tctx, "alice", "w1", 10)
+	if err != nil {
+		t.Fatalf("lock not released after idempotency cache hit: %v", err)
+	}
+	db := dbSnapshot(t, "alice")
+	if db.GrossBalance != 90 {
+		t.Fatalf("expected gross_balance=90 after withdraw, got %+v", db)
+	}
+}
+
 // ── gRPC handler tests ────────────────────────────────────────────────────
 
 func newGRPCClient(t *testing.T) (pb.CashierServiceClient, func()) {
@@ -317,7 +348,7 @@ func newGRPCClient(t *testing.T) (pb.CashierServiceClient, func()) {
 	lis := bufconn.Listen(bufSize)
 
 	srv := grpc.NewServer()
-	cashier := NewPostgresCashier(testPool, 24*time.Hour)
+	cashier := NewPostgresCashier(testPool)
 	pb.RegisterCashierServiceServer(srv, NewCashierService(cashier))
 	go srv.Serve(lis)
 

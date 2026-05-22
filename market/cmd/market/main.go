@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/secwager/secwager/market/internal/service"
 )
@@ -21,6 +22,9 @@ func main() {
 		DepthTopic: envOr("KAFKA_DEPTH_TOPIC", "depth_updates"),
 		DataDir:    envOr("MARKET_DATA_DIR", "/data"),
 		FlushEvery: optInt(envOr("MARKET_FLUSH_EVERY", "1000")),
+		MinBytes:   optInt(envOr("MARKET_KAFKA_MIN_BYTES", "0")),
+		MaxBytes:   optInt(envOr("MARKET_KAFKA_MAX_BYTES", "0")),
+		MaxWait:    optDuration(envOr("MARKET_KAFKA_MAX_WAIT", "")),
 	}
 
 	svc := service.New(cfg)
@@ -58,4 +62,9 @@ func mustInt(s string) int {
 func optInt(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func optDuration(s string) time.Duration {
+	d, _ := time.ParseDuration(s)
+	return d
 }

@@ -1,0 +1,52 @@
+syntax = "proto3";
+package secwager;
+
+enum Side { BUY = 0; SELL = 1; }
+
+// Published to incoming_orders by order_gateway; consumed by market.
+message Order {
+  string symbol = 1;
+  string trader = 2;   // max 8 chars → engine Order::trader
+  uint32 price  = 3;   // t_price (1–65535)
+  uint32 size   = 4;   // t_size
+  Side   side   = 5;
+}
+
+// Published to incoming_orders by order_gateway for cancel requests.
+message CancelRequest {
+  string symbol   = 1;
+  uint32 order_id = 2;  // t_orderid from a prior OrderStatus{ACCEPTED}
+}
+
+// Wrapper: either a new order or a cancel — keyed by symbol on the topic.
+message MarketCommand {
+  oneof command {
+    Order         new_order = 1;
+    CancelRequest cancel    = 2;
+  }
+}
+
+// Published to executions by market; consumed by risk, reporting, etc.
+message Execution {
+  string symbol = 1;
+  string buyer  = 2;
+  string seller = 3;
+  uint32 price  = 4;
+  uint32 size   = 5;
+}
+
+// Published to order_status by market.
+enum OrderStatusType {
+  ACCEPTED  = 0;  // order entered book; remaining_size = qty now resting (0 = fully filled)
+  REJECTED  = 1;  // order not accepted (pool exhausted, invalid, etc.)
+  CANCELLED = 2;  // resting order removed; remaining_size = qty that was still resting
+}
+
+message OrderStatus {
+  string          symbol         = 1;
+  string          trader         = 2;
+  uint32          order_id       = 3;  // assigned t_orderid; 0 if REJECTED
+  OrderStatusType status         = 4;
+  uint32          remaining_size = 5;  // qty still resting after this event
+  string          reject_reason  = 6;  // set only when status=REJECTED
+}

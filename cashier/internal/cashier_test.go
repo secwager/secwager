@@ -47,8 +47,14 @@ func TestDeposit_Idempotent(t *testing.T) {
 	c, ctx := setup()
 	snap1, _ := c.Deposit(ctx, "alice", "key-1", 100)
 	snap2, _ := c.Deposit(ctx, "alice", "key-1", 100) // same key
-	if snap1 != snap2 {
+	if snap1.GrossBalance != snap2.GrossBalance || snap1.Escrowed != snap2.Escrowed {
 		t.Fatalf("idempotency broken: got %+v then %+v", snap1, snap2)
+	}
+	if snap1.IsReplay {
+		t.Fatal("first call should not be a replay")
+	}
+	if !snap2.IsReplay {
+		t.Fatal("second call should be a replay")
 	}
 	// Balance should only be 100, not 200.
 	check, _ := c.CheckAvailable(ctx, "alice")
@@ -93,8 +99,11 @@ func TestWithdraw_Idempotent(t *testing.T) {
 	c.Deposit(ctx, "alice", "dep-1", 100)
 	snap1, _ := c.Withdraw(ctx, "alice", "wth-1", 30)
 	snap2, _ := c.Withdraw(ctx, "alice", "wth-1", 30) // same key
-	if snap1 != snap2 {
+	if snap1.GrossBalance != snap2.GrossBalance || snap1.Escrowed != snap2.Escrowed {
 		t.Fatalf("idempotency broken: %+v vs %+v", snap1, snap2)
+	}
+	if !snap2.IsReplay {
+		t.Fatal("second call should be a replay")
 	}
 	check, _ := c.CheckAvailable(ctx, "alice")
 	if check.GrossBalance != 70 {

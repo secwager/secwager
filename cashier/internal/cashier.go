@@ -5,6 +5,7 @@ import "context"
 type AccountSnapshot struct {
 	GrossBalance int64
 	Escrowed     int64
+	IsReplay     bool
 }
 
 type InsufficientFundsError struct{ Msg string }

@@ -290,10 +290,12 @@ func (x *CheckRequest) GetUserId() string {
 }
 
 // Returned by every RPC. Spendable = gross_balance - escrowed.
+// is_replay is true when the request was deduplicated via an idempotency key.
 type CashierResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	GrossBalance  int64                  `protobuf:"varint,1,opt,name=gross_balance,json=grossBalance,proto3" json:"gross_balance,omitempty"`
 	Escrowed      int64                  `protobuf:"varint,2,opt,name=escrowed,proto3" json:"escrowed,omitempty"`
+	IsReplay      bool                   `protobuf:"varint,3,opt,name=is_replay,json=isReplay,proto3" json:"is_replay,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -342,6 +344,13 @@ func (x *CashierResponse) GetEscrowed() int64 {
 	return 0
 }
 
+func (x *CashierResponse) GetIsReplay() bool {
+	if x != nil {
+		return x.IsReplay
+	}
+	return false
+}
+
 var File_cashier_cashier_proto protoreflect.FileDescriptor
 
 const file_cashier_cashier_proto_rawDesc = "" +
@@ -362,10 +371,11 @@ const file_cashier_cashier_proto_rawDesc = "" +
 	"\x14ReleaseEscrowRequest\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\rR\aorderId\"'\n" +
 	"\fCheckRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\"R\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"o\n" +
 	"\x0fCashierResponse\x12#\n" +
 	"\rgross_balance\x18\x01 \x01(\x03R\fgrossBalance\x12\x1a\n" +
-	"\bescrowed\x18\x02 \x01(\x03R\bescrowed2\xd7\x02\n" +
+	"\bescrowed\x18\x02 \x01(\x03R\bescrowed\x12\x1b\n" +
+	"\tis_replay\x18\x03 \x01(\bR\bisReplay2\xd7\x02\n" +
 	"\x0eCashierService\x12<\n" +
 	"\aDeposit\x12\x17.cashier.DepositRequest\x1a\x18.cashier.CashierResponse\x12>\n" +
 	"\bWithdraw\x12\x18.cashier.WithdrawRequest\x1a\x18.cashier.CashierResponse\x12:\n" +

@@ -145,8 +145,14 @@ func TestDB_Deposit_Idempotent(t *testing.T) {
 
 	snap1, _ := c.Deposit(ctx, "alice", "k1", 100)
 	snap2, _ := c.Deposit(ctx, "alice", "k1", 100)
-	if snap1 != snap2 {
+	if snap1.GrossBalance != snap2.GrossBalance || snap1.Escrowed != snap2.Escrowed {
 		t.Fatalf("idempotency broken: %+v vs %+v", snap1, snap2)
+	}
+	if snap1.IsReplay {
+		t.Fatal("first call should not be a replay")
+	}
+	if !snap2.IsReplay {
+		t.Fatal("second call should be a replay")
 	}
 	db := dbSnapshot(t, "alice")
 	if db.GrossBalance != 100 {
@@ -317,13 +323,16 @@ func TestDB_IdempotencyCacheHit_ReleasesRowLock(t *testing.T) {
 
 	c.Deposit(ctx, "alice", "k1", 100)
 
-	// Second call with same key hits the cache and returns early via deferred rollback.
+	// Second call with same key hits the cache and returns current state.
 	snap, err := c.Deposit(ctx, "alice", "k1", 999)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snap.GrossBalance != 100 {
-		t.Fatalf("expected cached gross_balance=100, got %+v", snap)
+		t.Fatalf("expected gross_balance=100, got %+v", snap)
+	}
+	if !snap.IsReplay {
+		t.Fatal("expected IsReplay=true on cache hit")
 	}
 
 	// If the deferred rollback didn't release the idempotency_keys row lock,

@@ -66,6 +66,7 @@ func toResponse(snap AccountSnapshot, err error) (*pb.CashierResponse, error) {
 	return &pb.CashierResponse{
 		GrossBalance: snap.GrossBalance,
 		Escrowed:     snap.Escrowed,
+		IsReplay:     snap.IsReplay,
 	}, nil
 }
 

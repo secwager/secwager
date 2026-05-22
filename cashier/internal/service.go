@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/secwager/secwager/cashier/gen/cashier"
+	pb "github.com/secwager/secwager/proto/gen/cashier"
 )
 
 type CashierService struct {

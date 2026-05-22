@@ -27,7 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	pb "github.com/secwager/secwager/cashier/gen/cashier"
+	pb "github.com/secwager/secwager/proto/gen/cashier"
 )
 
 var (

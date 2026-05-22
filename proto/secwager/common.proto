@@ -1,5 +1,6 @@
 syntax = "proto3";
 package secwager;
+option go_package = "github.com/secwager/secwager/proto/gen/secwager";
 
 enum Side { BUY = 0; SELL = 1; }
 
@@ -15,7 +16,7 @@ message Order {
 // Published to incoming_orders by order_gateway for cancel requests.
 message CancelRequest {
   string symbol   = 1;
-  uint32 order_id = 2;  // t_orderid from a prior OrderStatus{ACCEPTED}
+  uint32 order_id = 2;
 }
 
 // Wrapper: either a new order or a cancel — keyed by symbol on the topic.
@@ -26,32 +27,30 @@ message MarketCommand {
   }
 }
 
-// Published to executions by market; consumed by risk, reporting, etc.
-message Execution {
-  string symbol = 1;
-  string buyer  = 2;
-  string seller = 3;
-  uint32 price  = 4;
-  uint32 size   = 5;
-}
-
-// Published to order_status by market.
-enum OrderStatusType {
-  ACCEPTED  = 0;  // order entered book; remaining_size = qty now resting (0 = fully filled)
-  REJECTED  = 1;  // order not accepted (pool exhausted, invalid, etc.)
-  CANCELLED = 2;  // resting order removed; remaining_size = qty that was still resting
+enum ExecType {
+  ORDER_ACCEPTED  = 0;  // resting in book; qty_filled=0
+  ORDER_FILLED    = 1;  // fill occurred; qty_remaining=0 means fully matched
+  ORDER_CANCELLED = 2;
+  ORDER_REJECTED  = 3;
 }
 
 enum RejectReason {
-  REJECT_REASON_UNSPECIFIED = 0;  // internal/unknown error
-  ORDER_ALREADY_FILLED      = 1;  // cancel arrived after order fully filled
+  REJECT_REASON_UNSPECIFIED = 0;
+  ORDER_ALREADY_FILLED      = 1;  // cancel: slot exists but qty=0 (fully matched)
+  ORDER_NOT_FOUND           = 2;  // cancel: ID not in pool at all
 }
 
-message OrderStatus {
-  string          symbol         = 1;
-  string          trader         = 2;
-  uint32          order_id       = 3;  // assigned t_orderid; 0 if REJECTED
-  OrderStatusType status         = 4;
-  uint32          remaining_size = 5;  // qty still resting after this event
-  RejectReason    reject_reason  = 6;  // set only when status=REJECTED
+// Single message for all order lifecycle events. Published to order_executions.
+// On a fill, two reports are emitted — one per side. matched_against carries
+// all counterparty traders for this order's fills up to this event.
+message ExecutionReport {
+  string       symbol          = 1;
+  string       trader          = 2;
+  uint32       order_id        = 3;
+  ExecType     exec_type       = 4;
+  uint32       qty_filled      = 5;  // cumulative; 0 if exec_type != ORDER_FILLED
+  uint32       qty_remaining   = 6;
+  uint32       fill_price      = 7;  // price of most recent fill; 0 if not ORDER_FILLED
+  repeated string matched_against = 8;  // counterparty traders (all fills so far)
+  RejectReason reject_reason   = 9;  // set only when exec_type=ORDER_REJECTED
 }

@@ -1,0 +1,17 @@
+syntax = "proto3";
+package market;
+option go_package = "github.com/secwager/secwager/proto/gen/market";
+import "secwager/book_snapshot.proto";
+
+message SymbolBook {
+  string               symbol = 1;
+  secwager.BookSnapshot book  = 2;
+}
+
+// Written atomically to /data/snapshot (via /data/snapshot.tmp + rename).
+// offset is the last fully-processed Kafka message offset; on restore seek to offset+1.
+// Missing file on first boot → consume from beginning.
+message MarketSnapshot {
+  int64               offset = 1;
+  repeated SymbolBook books  = 2;
+}

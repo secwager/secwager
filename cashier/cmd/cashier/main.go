@@ -17,7 +17,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 
-	pb "github.com/secwager/secwager/cashier/gen/cashier"
+	pb "github.com/secwager/secwager/proto/gen/cashier"
 	"github.com/secwager/secwager/cashier/internal"
 )
 

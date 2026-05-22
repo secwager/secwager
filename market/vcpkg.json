@@ -1,7 +1,0 @@
-{
-  "dependencies": [
-    "protobuf",
-    "gtest",
-    "librdkafka"
-  ]
-}

@@ -41,7 +41,7 @@ private:
     void publish(const std::string& topic, const std::string& key,
                  const google::protobuf::MessageLite& msg);
 
-    struct TopOfBook { t_price bid; t_price ask; };
+    struct TopOfBook { t_price bid; t_price ask; t_size bid_qty; t_size ask_qty; };
     TopOfBook snapshot_tob(MatchEngine&) const;
     void      maybe_publish_depth(const std::string& symbol,
                                   MatchEngine& eng, TopOfBook before);
@@ -54,6 +54,8 @@ private:
     // Best-effort remaining size per order_id per symbol (for cancel status)
     std::unordered_map<std::string,
         std::unordered_map<t_orderid, t_size>> order_remaining_;
+
+    std::unordered_map<std::string, t_price> last_price_;  // last trade price per symbol
 
     // Non-owning pointer into the current handle_new_order stack frame;
     // null outside of a limit() call.

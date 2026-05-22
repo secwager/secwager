@@ -4,11 +4,12 @@
 #include <cstring>
 #include <stdexcept>
 
-MatchEngine::MatchEngine(ExecCallback cb)
+MatchEngine::MatchEngine(ExecCallback cb, uint32_t pool_size)
     : on_exec_(std::move(cb))
     , bids_(MAX_PRICE)
     , asks_(MAX_PRICE)
-    , pool_(MAX_ORDERS)
+    , pool_(pool_size)
+    , pool_capacity_(pool_size)
 {
     reset();
 }
@@ -17,6 +18,7 @@ void MatchEngine::reset() {
     std::memset(bids_.data(), 0, bids_.size() * sizeof(PriceLevel));
     std::memset(asks_.data(), 0, asks_.size() * sizeof(PriceLevel));
     std::memset(pool_.data(), 0, pool_.size() * sizeof(OrderEntry));
+    free_list_.clear();
     pool_top_ = 1;      // 0 is the NONE sentinel
     bid_max_  = 0;      // no bids
     ask_min_  = MAX_PRICE;  // no asks
@@ -40,10 +42,34 @@ t_price MatchEngine::best_ask() const {
     return 0;
 }
 
+t_size MatchEngine::best_bid_qty() const {
+    t_price p = best_bid();
+    if (p == 0) return 0;
+    t_size qty = 0;
+    for (t_orderid cur = bids_[p].head; cur != NONE; cur = pool_[cur].next)
+        if (pool_[cur].active) qty += pool_[cur].size;
+    return qty;
+}
+
+t_size MatchEngine::best_ask_qty() const {
+    t_price p = best_ask();
+    if (p == 0) return 0;
+    t_size qty = 0;
+    for (t_orderid cur = asks_[p].head; cur != NONE; cur = pool_[cur].next)
+        if (pool_[cur].active) qty += pool_[cur].size;
+    return qty;
+}
+
 t_orderid MatchEngine::alloc(const Order& o) {
-    if (pool_top_ >= MAX_ORDERS)
-        throw std::runtime_error("order pool exhausted");
-    t_orderid id = pool_top_++;
+    t_orderid id;
+    if (!free_list_.empty()) {
+        id = free_list_.back();
+        free_list_.pop_back();
+    } else {
+        if (pool_top_ >= pool_capacity_)
+            throw std::runtime_error("order pool exhausted");
+        id = pool_top_++;
+    }
     OrderEntry& e = pool_[id];
     std::memcpy(e.trader, o.trader, 8);
     e.size   = o.size;
@@ -64,13 +90,17 @@ void MatchEngine::enqueue(PriceLevel& lvl, t_orderid id) {
 }
 
 void MatchEngine::skip_inactive(PriceLevel& lvl) {
-    while (lvl.head != NONE && !pool_[lvl.head].active)
+    while (lvl.head != NONE && !pool_[lvl.head].active) {
+        free_list_.push_back(lvl.head);
         lvl.head = pool_[lvl.head].next;
+    }
     if (lvl.head == NONE)
         lvl.tail = NONE;
 }
 
 t_orderid MatchEngine::limit(const Order& order) {
+    if (order.price == 0)
+        throw std::out_of_range("order price must be >= 1");
     t_orderid id = alloc(order);
 
     if (order.side == 'B') {
@@ -82,7 +112,8 @@ t_orderid MatchEngine::limit(const Order& order) {
                 ++ask_min_;
                 continue;
             }
-            OrderEntry& resting = pool_[lvl.head];
+            t_orderid resting_id = lvl.head;
+            OrderEntry& resting = pool_[resting_id];
             t_size fill = std::min(pool_[id].size, resting.size);
 
             Execution exec;
@@ -102,6 +133,7 @@ t_orderid MatchEngine::limit(const Order& order) {
                     lvl.tail = NONE;
                     ++ask_min_;
                 }
+                free_list_.push_back(resting_id);
             }
         }
 
@@ -111,6 +143,7 @@ t_orderid MatchEngine::limit(const Order& order) {
                 bid_max_ = order.price;
         } else {
             pool_[id].active = false;
+            free_list_.push_back(id);
         }
 
     } else {
@@ -119,11 +152,11 @@ t_orderid MatchEngine::limit(const Order& order) {
             PriceLevel& lvl = bids_[bid_max_];
             skip_inactive(lvl);
             if (lvl.head == NONE) {
-                if (bid_max_ == 0) break;
                 --bid_max_;
                 continue;
             }
-            OrderEntry& resting = pool_[lvl.head];
+            t_orderid resting_id = lvl.head;
+            OrderEntry& resting = pool_[resting_id];
             t_size fill = std::min(pool_[id].size, resting.size);
 
             Execution exec;
@@ -143,6 +176,7 @@ t_orderid MatchEngine::limit(const Order& order) {
                     lvl.tail = NONE;
                     if (bid_max_ > 0) --bid_max_;
                 }
+                free_list_.push_back(resting_id);
             }
         }
 
@@ -152,6 +186,7 @@ t_orderid MatchEngine::limit(const Order& order) {
                 ask_min_ = order.price;
         } else {
             pool_[id].active = false;
+            free_list_.push_back(id);
         }
     }
 
@@ -160,19 +195,28 @@ t_orderid MatchEngine::limit(const Order& order) {
 
 void MatchEngine::cancel(t_orderid id) {
     if (id == NONE || id >= pool_top_) return;
-    pool_[id].active = false;
-    pool_[id].size   = 0;
-    // bid_max_ / ask_min_ are lazily corrected during the next limit() call
+    OrderEntry& e = pool_[id];
+    if (!e.active) return;
+    e.active = false;
+    e.size   = 0;
+    if (e.side == 'B' && static_cast<uint32_t>(e.price) == bid_max_)
+        bid_max_ = best_bid();
+    else if (e.side == 'S' && static_cast<uint32_t>(e.price) == ask_min_) {
+        t_price ba = best_ask();
+        ask_min_ = (ba == 0) ? MAX_PRICE : ba;
+    }
 }
 
 std::string MatchEngine::serialize() const {
     secwager::BookSnapshot snap;
-    snap.set_best_bid(bid_max_);
-    snap.set_best_ask(ask_min_);
+    t_price true_bid = best_bid();
+    t_price true_ask = best_ask();
+    snap.set_best_bid(true_bid);
+    snap.set_best_ask(true_ask == 0 ? 0 : true_ask);
     snap.set_pool_top(pool_top_);
 
     // Bids: high to low (best price first)
-    for (uint32_t p = bid_max_; p > 0; --p) {
+    for (uint32_t p = true_bid; p > 0; --p) {
         t_orderid cur = bids_[p].head;
         while (cur != NONE) {
             const OrderEntry& e = pool_[cur];
@@ -189,7 +233,7 @@ std::string MatchEngine::serialize() const {
     }
 
     // Asks: low to high (best price first)
-    for (uint32_t p = ask_min_; p < MAX_PRICE; ++p) {
+    for (uint32_t p = (true_ask == 0 ? MAX_PRICE : true_ask); p < MAX_PRICE; ++p) {
         t_orderid cur = asks_[p].head;
         while (cur != NONE) {
             const OrderEntry& e = pool_[cur];

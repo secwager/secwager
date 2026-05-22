@@ -14,6 +14,7 @@ protobuf_generate(
     TARGET         secwager_proto
     PROTOS         secwager/common.proto
                    secwager/book_snapshot.proto
+                   cashier/cashier.proto
     LANGUAGE       cpp
     IMPORT_DIRS    ${CMAKE_CURRENT_SOURCE_DIR}
     PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}

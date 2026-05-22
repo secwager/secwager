@@ -181,6 +181,65 @@ TEST(MarketServiceTest, CancelUnknownSymbolNoEngine) {
     EXPECT_EQ(st.status(), secwager::CANCELLED);
 }
 
+TEST(MarketServiceTest, CancelFullyFilledOrderIsRejected) {
+    std::vector<Published> published;
+    MarketService svc(make_test_config(published));
+
+    // Rest a sell at 100 for size 5
+    svc.process("AAPL", make_order("seller", 100, 5, secwager::SELL));
+
+    // Aggressive buy that fully fills — remaining_size will be 0
+    svc.process("AAPL", make_order("buyer", 100, 5, secwager::BUY));
+
+    // Extract the buyer's order_id (the fully-filled order)
+    uint32_t filled_id = 0;
+    for (const auto& p : published) {
+        if (p.topic == "order_status") {
+            secwager::OrderStatus st;
+            st.ParseFromString(p.payload);
+            if (st.remaining_size() == 0 && st.status() == secwager::ACCEPTED)
+                filled_id = st.order_id();
+        }
+    }
+    ASSERT_GT(filled_id, 0u);
+    published.clear();
+
+    // Attempt to cancel the already-filled order
+    svc.process("AAPL", make_cancel(filled_id));
+
+    ASSERT_EQ(published.size(), 1u);
+    EXPECT_EQ(published[0].topic, "order_status");
+    secwager::OrderStatus st;
+    ASSERT_TRUE(st.ParseFromString(published[0].payload));
+    EXPECT_EQ(st.status(),        secwager::REJECTED);
+    EXPECT_EQ(st.reject_reason(), secwager::ORDER_ALREADY_FILLED);
+    EXPECT_EQ(st.order_id(),      filled_id);
+
+    // No depth update should have been published
+    for (const auto& p : published)
+        EXPECT_NE(p.topic, "depth_updates");
+}
+
+TEST(MarketServiceTest, InvalidPriceRejected) {
+    std::vector<Published> published;
+    MarketService svc(make_test_config(published));
+
+    svc.process("AAPL", make_order("alice", 0, 10, secwager::BUY));
+
+    bool found_rejected = false;
+    for (const auto& p : published) {
+        EXPECT_NE(p.topic, "depth_updates");
+        if (p.topic == "order_status") {
+            secwager::OrderStatus st;
+            ASSERT_TRUE(st.ParseFromString(p.payload));
+            EXPECT_EQ(st.status(), secwager::REJECTED);
+            found_rejected = true;
+        }
+    }
+    EXPECT_TRUE(found_rejected);
+    ASSERT_EQ(published.size(), 1u);
+}
+
 TEST(MarketServiceTest, MultiSymbolEnginesAreIsolated) {
     std::vector<Published> published;
     MarketService svc(make_test_config(published));

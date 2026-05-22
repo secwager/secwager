@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    "protobuf",
+    "grpc",
+    "offscale-libetcd-cpp",
+    "libpqxx",
+    "gtest"
+  ]
+}

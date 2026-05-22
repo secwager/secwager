@@ -5,3 +5,4 @@ use ./market
 use ./matchengine
 use ./proto
 use ./registry
+use ./userregistration

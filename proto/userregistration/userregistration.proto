@@ -1,0 +1,29 @@
+syntax = "proto3";
+package userregistration;
+option go_package = "github.com/secwager/secwager/proto/gen/userregistration";
+
+service UserRegistrationService {
+  rpc RegisterUser (RegisterUserRequest)  returns (RegisterUserResponse);
+  rpc GetUser      (GetUserRequest)       returns (GetUserResponse);
+}
+
+message RegisterUserRequest {
+  string username = 1;
+  string email    = 2;
+}
+
+message RegisterUserResponse {
+  string user_id    = 1;
+  string username   = 2;
+  bytes  btc_pubkey = 3;
+}
+
+message GetUserRequest {
+  string username = 1;
+}
+
+message GetUserResponse {
+  string user_id    = 1;
+  string username   = 2;
+  bytes  btc_pubkey = 3;
+}

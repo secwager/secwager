@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+message OrderSnapshot {
+    uint32 id     = 1;   // original t_orderid — preserved for cancel resolution
+    string trader = 2;
+    uint32 price  = 3;   // price level (1–65535)
+    uint32 size   = 4;   // remaining unfilled quantity
+    string side   = 5;   // "B" buy or "S" sell
+}
+
+message BookSnapshot {
+    repeated OrderSnapshot orders = 1;  // FIFO order preserved within each price level
+    uint32 best_bid  = 2;              // cached best bid (avoids rescan on restore)
+    uint32 best_ask  = 3;              // cached best ask
+    uint32 pool_top  = 4;              // next free order ID (avoids ID collision post-restore)
+}

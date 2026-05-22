@@ -1,5 +1,6 @@
 go 1.26.3
 
+use ./btcwatcher
 use ./cashier
 use ./market
 use ./matchengine

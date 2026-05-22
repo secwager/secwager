@@ -204,3 +204,77 @@ func TestCheckAvailable_UnknownUserReturnsZero(t *testing.T) {
 		t.Fatalf("expected zero snapshot, got %+v", snap)
 	}
 }
+
+func TestDepositEscrowed_FundsVisibleButLocked(t *testing.T) {
+	c, ctx := setup()
+	snap, err := c.DepositEscrowed(ctx, "alice", "abc123:0", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GrossBalance != 500 || snap.Escrowed != 500 {
+		t.Fatalf("expected gross=500 escrowed=500, got %+v", snap)
+	}
+	// available = gross - escrowed = 0
+	avail, _ := c.CheckAvailable(ctx, "alice")
+	if avail.GrossBalance-avail.Escrowed != 0 {
+		t.Fatalf("expected available=0, got %d", avail.GrossBalance-avail.Escrowed)
+	}
+}
+
+func TestDepositEscrowed_Idempotent(t *testing.T) {
+	c, ctx := setup()
+	snap1, _ := c.DepositEscrowed(ctx, "alice", "abc123:0", 500)
+	snap2, _ := c.DepositEscrowed(ctx, "alice", "abc123:0", 500)
+	if snap1.GrossBalance != snap2.GrossBalance {
+		t.Fatalf("idempotency broken: %+v vs %+v", snap1, snap2)
+	}
+	if !snap2.IsReplay {
+		t.Fatal("second call should be a replay")
+	}
+	check, _ := c.CheckAvailable(ctx, "alice")
+	if check.GrossBalance != 500 {
+		t.Fatalf("double-applied deposit, got gross_balance=%d", check.GrossBalance)
+	}
+}
+
+func TestConfirmDeposit_MovesToAvailable(t *testing.T) {
+	c, ctx := setup()
+	c.DepositEscrowed(ctx, "alice", "abc123:0", 500)
+	snap, err := c.ConfirmDeposit(ctx, "alice", "abc123:0", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// escrowed decreases, gross unchanged → available = 500
+	if snap.GrossBalance != 500 || snap.Escrowed != 0 {
+		t.Fatalf("expected gross=500 escrowed=0, got %+v", snap)
+	}
+}
+
+func TestConfirmDeposit_Idempotent(t *testing.T) {
+	c, ctx := setup()
+	c.DepositEscrowed(ctx, "alice", "abc123:0", 500)
+	snap1, _ := c.ConfirmDeposit(ctx, "alice", "abc123:0", 500)
+	snap2, _ := c.ConfirmDeposit(ctx, "alice", "abc123:0", 500)
+	if snap1.GrossBalance != snap2.GrossBalance {
+		t.Fatalf("idempotency broken: %+v vs %+v", snap1, snap2)
+	}
+	if !snap2.IsReplay {
+		t.Fatal("second ConfirmDeposit should be a replay")
+	}
+}
+
+func TestDepositEscrowed_ThenOrderEscrow_Available(t *testing.T) {
+	c, ctx := setup()
+	// BTC deposit in escrow
+	c.DepositEscrowed(ctx, "alice", "abc123:0", 1000)
+	// Confirm deposit → available = 1000
+	c.ConfirmDeposit(ctx, "alice", "abc123:0", 1000)
+	// Place order escrow
+	snap, err := c.Escrow(ctx, "alice", 7, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GrossBalance != 1000 || snap.Escrowed != 400 {
+		t.Fatalf("expected gross=1000 escrowed=400, got %+v", snap)
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"log"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,14 +30,15 @@ func (e *NotFoundError) Error() string      { return e.Msg }
 // UserRegistrationService implements pb.UserRegistrationServiceServer.
 type UserRegistrationService struct {
 	pb.UnimplementedUserRegistrationServiceServer
-	pool      *pgxpool.Pool
-	users     UserManager
-	encryptor KeyEncryptor
-	kmsKeyID  string
+	pool         *pgxpool.Pool
+	users        UserManager
+	encryptor    KeyEncryptor
+	kmsKeyID     string
+	chainParams  *chaincfg.Params
 }
 
-func NewUserRegistrationService(pool *pgxpool.Pool, users UserManager, enc KeyEncryptor, kmsKeyID string) *UserRegistrationService {
-	return &UserRegistrationService{pool: pool, users: users, encryptor: enc, kmsKeyID: kmsKeyID}
+func NewUserRegistrationService(pool *pgxpool.Pool, users UserManager, enc KeyEncryptor, kmsKeyID string, chainParams *chaincfg.Params) *UserRegistrationService {
+	return &UserRegistrationService{pool: pool, users: users, encryptor: enc, kmsKeyID: kmsKeyID, chainParams: chainParams}
 }
 
 func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.RegisterUserRequest) (*pb.RegisterUserResponse, error) {
@@ -80,6 +83,14 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 	pubKeyBytes := privKey.PubKey().SerializeCompressed()
 	privKeyBytes := privKey.Serialize()
 
+	// Derive P2WPKH bech32 address from the public key.
+	addrHash := btcutil.Hash160(pubKeyBytes)
+	btcAddr, err := btcutil.NewAddressWitnessPubKeyHash(addrHash, s.chainParams)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("derive btc address: %v", err))
+	}
+	btcAddrStr := btcAddr.EncodeAddress()
+
 	// Encrypt private key; zero the plaintext immediately after.
 	encPrivKey, err := s.encryptor.Encrypt(ctx, privKeyBytes)
 	for i := range privKeyBytes {
@@ -91,9 +102,9 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 
 	// Saga step 3: persist to Postgres.
 	_, err = s.pool.Exec(ctx,
-		`INSERT INTO users (user_id, username, btc_pubkey, encrypted_privkey, kms_key_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		cognitoSub, req.Username, pubKeyBytes, encPrivKey, s.kmsKeyID)
+		`INSERT INTO users (user_id, username, btc_pubkey, btc_addr, encrypted_privkey, kms_key_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		cognitoSub, req.Username, pubKeyBytes, btcAddrStr, encPrivKey, s.kmsKeyID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -107,6 +118,7 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 		UserId:    cognitoSub,
 		Username:  req.Username,
 		BtcPubkey: pubKeyBytes,
+		BtcAddr:   btcAddrStr,
 	}, nil
 }
 
@@ -114,18 +126,18 @@ func (s *UserRegistrationService) GetUser(ctx context.Context, req *pb.GetUserRe
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	var userID, username string
+	var userID, username, btcAddr string
 	var pubkey []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT user_id, username, btc_pubkey FROM users WHERE username = $1`, req.Username).
-		Scan(&userID, &username, &pubkey)
+		`SELECT user_id, username, btc_pubkey, btc_addr FROM users WHERE username = $1`, req.Username).
+		Scan(&userID, &username, &pubkey, &btcAddr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.NotFound, "user not found: "+req.Username)
 	}
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("get user: %v", err))
 	}
-	return &pb.GetUserResponse{UserId: userID, Username: username, BtcPubkey: pubkey}, nil
+	return &pb.GetUserResponse{UserId: userID, Username: username, BtcPubkey: pubkey, BtcAddr: btcAddr}, nil
 }
 
 func toGRPCError(err error) error {

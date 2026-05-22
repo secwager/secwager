@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -62,10 +63,11 @@ func (e *fakeEncryptor) Encrypt(_ context.Context, plain []byte) ([]byte, error)
 // Only valid for tests that don't reach the DB (validation, Cognito-layer tests).
 func newTestService(um *fakeUserManager, enc *fakeEncryptor) *UserRegistrationService {
 	return &UserRegistrationService{
-		pool:      nil, // tests that hit DB belong in integration_test.go
-		users:     um,
-		encryptor: enc,
-		kmsKeyID:  "fake-kms-key",
+		pool:        nil, // tests that hit DB belong in integration_test.go
+		users:       um,
+		encryptor:   enc,
+		kmsKeyID:    "fake-kms-key",
+		chainParams: &chaincfg.TestNet3Params,
 	}
 }
 

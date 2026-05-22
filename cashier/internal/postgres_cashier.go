@@ -213,6 +213,55 @@ func (c *PostgresCashier) CheckAvailable(ctx context.Context, userID string) (Ac
 	return snap, nil
 }
 
+func (c *PostgresCashier) DepositEscrowed(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	if depositRef == "" {
+		return AccountSnapshot{}, fmt.Errorf("deposit_ref is required")
+	}
+	return c.withIdempotency(ctx, userID, depositRef, func(tx pgx.Tx) (AccountSnapshot, error) {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO accounts (user_id, gross_balance, escrowed, version)
+			VALUES ($1, $2, $2, 0)
+			ON CONFLICT (user_id) DO UPDATE
+				SET gross_balance = accounts.gross_balance + $2,
+				    escrowed      = accounts.escrowed + $2,
+				    version       = accounts.version + 1,
+				    updated_at    = clock_timestamp()`,
+			userID, amount)
+		if err != nil {
+			return AccountSnapshot{}, fmt.Errorf("deposit_escrowed: %w", err)
+		}
+		return c.fetchSnapshot(ctx, tx, userID)
+	})
+}
+
+func (c *PostgresCashier) ConfirmDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	if depositRef == "" {
+		return AccountSnapshot{}, fmt.Errorf("deposit_ref is required")
+	}
+	return c.withIdempotency(ctx, userID, "confirm:"+depositRef, func(tx pgx.Tx) (AccountSnapshot, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE accounts
+			   SET escrowed   = escrowed - $2,
+			       version    = version + 1,
+			       updated_at = clock_timestamp()
+			 WHERE user_id = $1`,
+			userID, amount)
+		if err != nil {
+			return AccountSnapshot{}, fmt.Errorf("confirm_deposit: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return AccountSnapshot{}, &UnknownUserError{Msg: "user not found: " + userID}
+		}
+		return c.fetchSnapshot(ctx, tx, userID)
+	})
+}
+
 // withIdempotency wraps fn in a transaction with idempotency key deduplication.
 // On a cache hit it returns the current account state (not the frozen post-op snapshot)
 // so the caller always sees live balances, and sets IsReplay=true so they can distinguish

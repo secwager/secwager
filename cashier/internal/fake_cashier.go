@@ -135,6 +135,47 @@ func (f *FakeCashier) CheckAvailable(ctx context.Context, userID string) (Accoun
 	return f.snapshot(acc), nil
 }
 
+func (f *FakeCashier) DepositEscrowed(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.idempotencyKeys[depositRef]; ok {
+		snap := f.snapshot(f.getOrCreate(userID))
+		snap.IsReplay = true
+		return snap, nil
+	}
+	acc := f.getOrCreate(userID)
+	acc.grossBalance += amount
+	acc.escrowed += amount
+	f.idempotencyKeys[depositRef] = struct{}{}
+	return f.snapshot(acc), nil
+}
+
+func (f *FakeCashier) ConfirmDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	confirmKey := "confirm:" + depositRef
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.idempotencyKeys[confirmKey]; ok {
+		snap := f.snapshot(f.getOrCreate(userID))
+		snap.IsReplay = true
+		return snap, nil
+	}
+	acc, ok := f.accounts[userID]
+	if !ok {
+		return AccountSnapshot{}, &UnknownUserError{Msg: "user not found: " + userID}
+	}
+	acc.escrowed -= amount
+	f.idempotencyKeys[confirmKey] = struct{}{}
+	return f.snapshot(acc), nil
+}
+
 func (f *FakeCashier) getOrCreate(userID string) *fakeAccount {
 	if acc, ok := f.accounts[userID]; ok {
 		return acc

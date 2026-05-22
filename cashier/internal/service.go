@@ -59,6 +59,28 @@ func (s *CashierService) CheckAvailable(ctx context.Context, req *pb.CheckReques
 	return toResponse(snap, err)
 }
 
+func (s *CashierService) DepositEscrowed(ctx context.Context, req *pb.DepositEscrowedRequest) (*pb.CashierResponse, error) {
+	if req.Amount <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
+	}
+	if req.DepositRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "deposit_ref is required")
+	}
+	snap, err := s.cashier.DepositEscrowed(ctx, req.UserId, req.DepositRef, req.Amount)
+	return toResponse(snap, err)
+}
+
+func (s *CashierService) ConfirmDeposit(ctx context.Context, req *pb.ConfirmDepositRequest) (*pb.CashierResponse, error) {
+	if req.Amount <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
+	}
+	if req.DepositRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "deposit_ref is required")
+	}
+	snap, err := s.cashier.ConfirmDeposit(ctx, req.UserId, req.DepositRef, req.Amount)
+	return toResponse(snap, err)
+}
+
 func toResponse(snap AccountSnapshot, err error) (*pb.CashierResponse, error) {
 	if err != nil {
 		return nil, toGRPCError(err)

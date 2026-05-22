@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -20,8 +21,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 
-	"github.com/secwager/secwager/userregistration/internal"
 	pb "github.com/secwager/secwager/proto/gen/userregistration"
+	"github.com/secwager/secwager/userregistration/internal"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 	region     := envOr("USERREG_COGNITO_REGION", "us-east-1")
 	kmsKeyARN  := mustEnv("USERREG_KMS_KEY_ARN")
 	poolSize   := parseInt(envOr("USERREG_PG_POOL_SIZE", "10"))
+	btcNetwork := envOr("USERREG_BTC_NETWORK", "mainnet")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -58,9 +60,10 @@ func main() {
 	cognitoClient := cognitoidentityprovider.NewFromConfig(awsCfg)
 	kmsClient     := kms.NewFromConfig(awsCfg)
 
-	userMgr := internal.NewCognitoUserManager(cognitoClient, poolID)
-	enc     := internal.NewKMSEncryptor(kmsClient, kmsKeyARN)
-	svc     := internal.NewUserRegistrationService(pool, userMgr, enc, kmsKeyARN)
+	userMgr    := internal.NewCognitoUserManager(cognitoClient, poolID)
+	enc        := internal.NewKMSEncryptor(kmsClient, kmsKeyARN)
+	chainParams := btcNetworkParams(btcNetwork)
+	svc        := internal.NewUserRegistrationService(pool, userMgr, enc, kmsKeyARN, chainParams)
 
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -101,6 +104,17 @@ func runMigrations(dsn string) error {
 	}
 	log.Println("migrations applied")
 	return nil
+}
+
+func btcNetworkParams(network string) *chaincfg.Params {
+	switch network {
+	case "testnet3":
+		return &chaincfg.TestNet3Params
+	case "regtest":
+		return &chaincfg.RegressionNetParams
+	default:
+		return &chaincfg.MainNetParams
+	}
 }
 
 func mustEnv(key string) string {

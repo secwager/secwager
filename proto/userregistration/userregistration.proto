@@ -16,6 +16,7 @@ message RegisterUserResponse {
   string user_id    = 1;
   string username   = 2;
   bytes  btc_pubkey = 3;
+  string btc_addr   = 4;
 }
 
 message GetUserRequest {
@@ -26,4 +27,5 @@ message GetUserResponse {
   string user_id    = 1;
   string username   = 2;
   bytes  btc_pubkey = 3;
+  string btc_addr   = 4;
 }

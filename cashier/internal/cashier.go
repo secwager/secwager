@@ -22,4 +22,10 @@ type Cashier interface {
 	Escrow(ctx context.Context, userID string, orderID uint32, amount int64) (AccountSnapshot, error)
 	ReleaseEscrow(ctx context.Context, orderID uint32) (AccountSnapshot, error)
 	CheckAvailable(ctx context.Context, userID string) (AccountSnapshot, error)
+	// DepositEscrowed atomically credits gross_balance and escrowed by amount.
+	// Funds are visible but not spendable until ConfirmDeposit is called.
+	DepositEscrowed(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error)
+	// ConfirmDeposit decrements escrowed by amount, leaving gross_balance unchanged.
+	// Available balance increases. Idempotent via "confirm:"+depositRef key.
+	ConfirmDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error)
 }

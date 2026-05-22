@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -80,7 +81,7 @@ func truncate(t *testing.T) {
 }
 
 func newTestSvc() *UserRegistrationService {
-	return NewUserRegistrationService(testPool, newFakeUserManager(), &fakeEncryptor{}, "fake-kms-key")
+	return NewUserRegistrationService(testPool, newFakeUserManager(), &fakeEncryptor{}, "fake-kms-key", &chaincfg.TestNet3Params)
 }
 
 // ── DB-backed tests ───────────────────────────────────────────────────────────
@@ -100,13 +101,16 @@ func TestDB_RegisterUser_Success(t *testing.T) {
 	if len(resp.BtcPubkey) != 33 {
 		t.Fatalf("expected 33-byte compressed pubkey, got %d bytes", len(resp.BtcPubkey))
 	}
+	if resp.BtcAddr == "" {
+		t.Fatal("expected non-empty btc_addr in response")
+	}
 
 	// Verify row persisted correctly.
-	var dbUserID string
+	var dbUserID, dbBtcAddr string
 	var dbPubkey, dbEncPrivKey []byte
 	err = testPool.QueryRow(ctx,
-		`SELECT user_id, btc_pubkey, encrypted_privkey FROM users WHERE username = 'alice'`).
-		Scan(&dbUserID, &dbPubkey, &dbEncPrivKey)
+		`SELECT user_id, btc_pubkey, btc_addr, encrypted_privkey FROM users WHERE username = 'alice'`).
+		Scan(&dbUserID, &dbPubkey, &dbBtcAddr, &dbEncPrivKey)
 	if err != nil {
 		t.Fatalf("db check: %v", err)
 	}
@@ -115,6 +119,9 @@ func TestDB_RegisterUser_Success(t *testing.T) {
 	}
 	if string(dbPubkey) != string(resp.BtcPubkey) {
 		t.Fatal("btc_pubkey mismatch between response and DB")
+	}
+	if dbBtcAddr != resp.BtcAddr {
+		t.Fatalf("btc_addr mismatch: resp=%s db=%s", resp.BtcAddr, dbBtcAddr)
 	}
 	if len(dbEncPrivKey) == 0 {
 		t.Fatal("encrypted_privkey should be non-empty in DB")
@@ -163,6 +170,9 @@ func TestDB_GetUser_Found(t *testing.T) {
 	}
 	if string(got.BtcPubkey) != string(created.BtcPubkey) {
 		t.Fatal("btc_pubkey mismatch between RegisterUser and GetUser")
+	}
+	if got.BtcAddr != created.BtcAddr {
+		t.Fatalf("btc_addr mismatch: created=%s got=%s", created.BtcAddr, got.BtcAddr)
 	}
 }
 

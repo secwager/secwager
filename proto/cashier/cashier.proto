@@ -4,11 +4,13 @@ package cashier;
 option go_package = "github.com/secwager/secwager/proto/gen/cashier";
 
 service CashierService {
-    rpc Deposit       (DepositRequest)       returns (CashierResponse);
-    rpc Withdraw      (WithdrawRequest)      returns (CashierResponse);
-    rpc Escrow        (EscrowRequest)        returns (CashierResponse);
-    rpc ReleaseEscrow (ReleaseEscrowRequest) returns (CashierResponse);
-    rpc CheckAvailable(CheckRequest)         returns (CashierResponse);
+    rpc Deposit        (DepositRequest)        returns (CashierResponse);
+    rpc Withdraw       (WithdrawRequest)       returns (CashierResponse);
+    rpc Escrow         (EscrowRequest)         returns (CashierResponse);
+    rpc ReleaseEscrow  (ReleaseEscrowRequest)  returns (CashierResponse);
+    rpc CheckAvailable (CheckRequest)          returns (CashierResponse);
+    rpc DepositEscrowed(DepositEscrowedRequest) returns (CashierResponse);
+    rpc ConfirmDeposit (ConfirmDepositRequest)  returns (CashierResponse);
 }
 
 message DepositRequest {
@@ -35,6 +37,18 @@ message ReleaseEscrowRequest {
 
 message CheckRequest {
     string user_id = 1;
+}
+
+message DepositEscrowedRequest {
+    string user_id     = 1;
+    int64  amount      = 2;
+    string deposit_ref = 3;  // txid:vout — idempotency key
+}
+
+message ConfirmDepositRequest {
+    string user_id     = 1;
+    int64  amount      = 2;  // caller supplies amount; no escrow_entries lookup needed
+    string deposit_ref = 3;  // idempotency key: stored as "confirm:"+deposit_ref internally
 }
 
 // Returned by every RPC. Spendable = gross_balance - escrowed.

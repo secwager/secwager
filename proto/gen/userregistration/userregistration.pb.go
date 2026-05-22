@@ -78,6 +78,7 @@ type RegisterUserResponse struct {
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
 	BtcPubkey     []byte                 `protobuf:"bytes,3,opt,name=btc_pubkey,json=btcPubkey,proto3" json:"btc_pubkey,omitempty"`
+	BtcAddr       string                 `protobuf:"bytes,4,opt,name=btc_addr,json=btcAddr,proto3" json:"btc_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -133,6 +134,13 @@ func (x *RegisterUserResponse) GetBtcPubkey() []byte {
 	return nil
 }
 
+func (x *RegisterUserResponse) GetBtcAddr() string {
+	if x != nil {
+		return x.BtcAddr
+	}
+	return ""
+}
+
 type GetUserRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
@@ -182,6 +190,7 @@ type GetUserResponse struct {
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
 	BtcPubkey     []byte                 `protobuf:"bytes,3,opt,name=btc_pubkey,json=btcPubkey,proto3" json:"btc_pubkey,omitempty"`
+	BtcAddr       string                 `protobuf:"bytes,4,opt,name=btc_addr,json=btcAddr,proto3" json:"btc_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -237,6 +246,13 @@ func (x *GetUserResponse) GetBtcPubkey() []byte {
 	return nil
 }
 
+func (x *GetUserResponse) GetBtcAddr() string {
+	if x != nil {
+		return x.BtcAddr
+	}
+	return ""
+}
+
 var File_userregistration_userregistration_proto protoreflect.FileDescriptor
 
 const file_userregistration_userregistration_proto_rawDesc = "" +
@@ -244,19 +260,21 @@ const file_userregistration_userregistration_proto_rawDesc = "" +
 	"'userregistration/userregistration.proto\x12\x10userregistration\"G\n" +
 	"\x13RegisterUserRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
-	"\x05email\x18\x02 \x01(\tR\x05email\"j\n" +
+	"\x05email\x18\x02 \x01(\tR\x05email\"\x85\x01\n" +
 	"\x14RegisterUserResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1d\n" +
 	"\n" +
-	"btc_pubkey\x18\x03 \x01(\fR\tbtcPubkey\",\n" +
+	"btc_pubkey\x18\x03 \x01(\fR\tbtcPubkey\x12\x19\n" +
+	"\bbtc_addr\x18\x04 \x01(\tR\abtcAddr\",\n" +
 	"\x0eGetUserRequest\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername\"e\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"\x80\x01\n" +
 	"\x0fGetUserResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1d\n" +
 	"\n" +
-	"btc_pubkey\x18\x03 \x01(\fR\tbtcPubkey2\xc8\x01\n" +
+	"btc_pubkey\x18\x03 \x01(\fR\tbtcPubkey\x12\x19\n" +
+	"\bbtc_addr\x18\x04 \x01(\tR\abtcAddr2\xc8\x01\n" +
 	"\x17UserRegistrationService\x12]\n" +
 	"\fRegisterUser\x12%.userregistration.RegisterUserRequest\x1a&.userregistration.RegisterUserResponse\x12N\n" +
 	"\aGetUser\x12 .userregistration.GetUserRequest\x1a!.userregistration.GetUserResponseB9Z7github.com/secwager/secwager/proto/gen/userregistrationb\x06proto3"

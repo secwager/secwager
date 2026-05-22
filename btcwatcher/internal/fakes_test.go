@@ -1,0 +1,224 @@
+package internal
+
+import (
+	"context"
+	"strconv"
+	"sync"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
+)
+
+// fakeSPVNode drives block events from a test-controlled channel.
+type fakeSPVNode struct {
+	mu        sync.Mutex
+	addrs     []btcutil.Address
+	blockFeed chan BlockEvent
+}
+
+func newFakeSPVNode() *fakeSPVNode {
+	return &fakeSPVNode{blockFeed: make(chan BlockEvent, 64)}
+}
+
+func (f *fakeSPVNode) WatchAddresses(addrs []btcutil.Address) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addrs = append(f.addrs, addrs...)
+	return nil
+}
+
+func (f *fakeSPVNode) Blocks(ctx context.Context) (<-chan BlockEvent, error) {
+	ch := make(chan BlockEvent, 64)
+	go func() {
+		defer close(ch)
+		for {
+			select {
+			case evt, ok := <-f.blockFeed:
+				if !ok {
+					return
+				}
+				select {
+				case ch <- evt:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+func (f *fakeSPVNode) BestBlock(_ context.Context) (int32, error) { return 0, nil }
+func (f *fakeSPVNode) Stop() error                                 { return nil }
+func (f *fakeSPVNode) push(evt BlockEvent)                         { f.blockFeed <- evt }
+
+// fakeDepositState tracks both escrowed and confirmed for a deposit.
+type fakeDepositState struct {
+	Deposit
+	confirmed bool
+}
+
+// fakeTxStore2 is an in-memory TxStore.
+type fakeTxStore2 struct {
+	mu       sync.Mutex
+	deposits map[string]*fakeDepositState
+}
+
+func newFakeTxStore2() *fakeTxStore2 {
+	return &fakeTxStore2{deposits: make(map[string]*fakeDepositState)}
+}
+
+func (s *fakeTxStore2) key(txid string, vout int) string {
+	return txid + ":" + strconv.Itoa(vout)
+}
+
+func (s *fakeTxStore2) Insert(_ context.Context, d Deposit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := s.key(d.Txid, d.Vout)
+	if _, exists := s.deposits[k]; exists {
+		return nil
+	}
+	s.deposits[k] = &fakeDepositState{Deposit: d}
+	return nil
+}
+
+func (s *fakeTxStore2) ListNotEscrowed(_ context.Context) ([]Deposit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Deposit
+	for _, ds := range s.deposits {
+		if !ds.Escrowed {
+			out = append(out, ds.Deposit)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeTxStore2) ListReadyToConfirm(_ context.Context, minDepth int, currentHeight int32) ([]Deposit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Deposit
+	for _, ds := range s.deposits {
+		if ds.Escrowed && !ds.confirmed && int(currentHeight-ds.SeenAtHeight) >= minDepth {
+			out = append(out, ds.Deposit)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeTxStore2) MarkEscrowed(_ context.Context, txid string, vout int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ds, ok := s.deposits[s.key(txid, vout)]; ok {
+		ds.Escrowed = true
+	}
+	return nil
+}
+
+func (s *fakeTxStore2) MarkConfirmed(_ context.Context, txid string, vout int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ds, ok := s.deposits[s.key(txid, vout)]; ok {
+		ds.confirmed = true
+	}
+	return nil
+}
+
+func (s *fakeTxStore2) DeleteFromHeight(_ context.Context, height int32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, ds := range s.deposits {
+		if ds.SeenAtHeight >= height && !ds.confirmed {
+			delete(s.deposits, k)
+		}
+	}
+	return nil
+}
+
+// fakeCashierClient records calls.
+type fakeCashierClient struct {
+	mu             sync.Mutex
+	escrowedCalls  []cashierCall
+	confirmCalls   []cashierCall
+	escrowErr      error
+	confirmErr     error
+	idempotencySet map[string]struct{}
+}
+
+type cashierCall struct {
+	UserID     string
+	Satoshis   int64
+	DepositRef string
+}
+
+func newFakeCashierClient() *fakeCashierClient {
+	return &fakeCashierClient{idempotencySet: make(map[string]struct{})}
+}
+
+func (c *fakeCashierClient) DepositEscrowed(_ context.Context, userID string, satoshis int64, depositRef string) error {
+	if c.escrowErr != nil {
+		return c.escrowErr
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := "esc:" + depositRef
+	if _, seen := c.idempotencySet[key]; seen {
+		return nil
+	}
+	c.idempotencySet[key] = struct{}{}
+	c.escrowedCalls = append(c.escrowedCalls, cashierCall{userID, satoshis, depositRef})
+	return nil
+}
+
+func (c *fakeCashierClient) ConfirmDeposit(_ context.Context, userID string, satoshis int64, depositRef string) error {
+	if c.confirmErr != nil {
+		return c.confirmErr
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := "conf:" + depositRef
+	if _, seen := c.idempotencySet[key]; seen {
+		return nil
+	}
+	c.idempotencySet[key] = struct{}{}
+	c.confirmCalls = append(c.confirmCalls, cashierCall{userID, satoshis, depositRef})
+	return nil
+}
+
+// fakeUserStore holds a static list of user records.
+type fakeUserStore struct {
+	mu      sync.Mutex
+	records []UserRecord
+}
+
+func newFakeUserStore(records ...UserRecord) *fakeUserStore {
+	return &fakeUserStore{records: records}
+}
+
+func (s *fakeUserStore) ListAll(_ context.Context) ([]UserRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]UserRecord, len(s.records))
+	copy(out, s.records)
+	return out, nil
+}
+
+func (s *fakeUserStore) add(r UserRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, r)
+}
+
+// Ensure fakes satisfy their interfaces at compile time.
+var (
+	_ SPVNode       = (*fakeSPVNode)(nil)
+	_ TxStore       = (*fakeTxStore2)(nil)
+	_ CashierClient = (*fakeCashierClient)(nil)
+	_ UserStore     = (*fakeUserStore)(nil)
+)
+
+// Suppress unused import of wire.
+var _ = (*wire.MsgTx)(nil)

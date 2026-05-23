@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -30,12 +33,17 @@ import (
 	pb "github.com/secwager/secwager/proto/gen/userregistration"
 )
 
-var testPool *pgxpool.Pool
+var (
+	testPool          *pgxpool.Pool
+	testCognitoClient *cognitoidentityprovider.Client
+	testCognitoPoolID string
+)
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 
-	req := testcontainers.ContainerRequest{
+	// ── Postgres ──────────────────────────────────────────────────────────────
+	pgReq := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
@@ -46,7 +54,7 @@ func TestMain(m *testing.M) {
 		WaitingFor: wait.ForListeningPort("5432/tcp").WithStartupTimeout(60 * time.Second),
 	}
 	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
+		ContainerRequest: pgReq,
 		Started:          true,
 	})
 	if err != nil {
@@ -55,9 +63,9 @@ func TestMain(m *testing.M) {
 	}
 	defer pgContainer.Terminate(ctx)
 
-	host, _ := pgContainer.Host(ctx)
-	port, _ := pgContainer.MappedPort(ctx, "5432")
-	dsn := fmt.Sprintf("host=%s port=%s user=userreg password=userreg dbname=userreg sslmode=disable", host, port.Port())
+	pgHost, _ := pgContainer.Host(ctx)
+	pgPort, _ := pgContainer.MappedPort(ctx, "5432")
+	dsn := fmt.Sprintf("host=%s port=%s user=userreg password=userreg dbname=userreg sslmode=disable", pgHost, pgPort.Port())
 
 	runTestMigrations(dsn)
 
@@ -68,6 +76,41 @@ func TestMain(m *testing.M) {
 	}
 	testPool = pool
 	defer pool.Close()
+
+	// ── Cognito-local ─────────────────────────────────────────────────────────
+	cogReq := testcontainers.ContainerRequest{
+		Image:        "jagregory/cognito-local:latest",
+		ExposedPorts: []string{"9229/tcp"},
+		WaitingFor:   wait.ForListeningPort("9229/tcp").WithStartupTimeout(60 * time.Second),
+	}
+	cogContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: cogReq,
+		Started:          true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start cognito-local container: %v\n", err)
+		os.Exit(1)
+	}
+	defer cogContainer.Terminate(ctx)
+
+	cogHost, _ := cogContainer.Host(ctx)
+	cogPort, _ := cogContainer.MappedPort(ctx, "9229")
+	cogEndpoint := fmt.Sprintf("http://%s:%s", cogHost, cogPort.Port())
+
+	testCognitoClient = cognitoidentityprovider.New(cognitoidentityprovider.Options{
+		Region:       "us-east-1",
+		BaseEndpoint: aws.String(cogEndpoint),
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+	})
+
+	poolOut, err := testCognitoClient.CreateUserPool(ctx, &cognitoidentityprovider.CreateUserPoolInput{
+		PoolName: aws.String("test-pool"),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create cognito user pool: %v\n", err)
+		os.Exit(1)
+	}
+	testCognitoPoolID = aws.ToString(poolOut.UserPool.Id)
 
 	os.Exit(m.Run())
 }
@@ -81,7 +124,13 @@ func truncate(t *testing.T) {
 }
 
 func newTestSvc() *UserRegistrationService {
-	return NewUserRegistrationService(testPool, newFakeUserManager(), &fakeEncryptor{}, "fake-kms-key", &chaincfg.TestNet3Params)
+	return NewUserRegistrationService(
+		testPool,
+		NewCognitoUserManager(testCognitoClient, testCognitoPoolID),
+		&fakeEncryptor{},
+		"fake-kms-key",
+		&chaincfg.TestNet3Params,
+	)
 }
 
 // ── DB-backed tests ───────────────────────────────────────────────────────────
@@ -91,11 +140,11 @@ func TestDB_RegisterUser_Success(t *testing.T) {
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	resp, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "alice", Email: "alice@example.com"})
+	resp, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "alice@test.local", Email: "alice@test.local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Username != "alice" || resp.UserId == "" {
+	if resp.Username != "alice@test.local" || resp.UserId == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if len(resp.BtcPubkey) != 33 {
@@ -109,7 +158,7 @@ func TestDB_RegisterUser_Success(t *testing.T) {
 	var dbUserID, dbBtcAddr string
 	var dbPubkey, dbEncPrivKey []byte
 	err = testPool.QueryRow(ctx,
-		`SELECT user_id, btc_pubkey, btc_addr, encrypted_privkey FROM users WHERE username = 'alice'`).
+		`SELECT user_id, btc_pubkey, btc_addr, encrypted_privkey FROM users WHERE username = 'alice@test.local'`).
 		Scan(&dbUserID, &dbPubkey, &dbBtcAddr, &dbEncPrivKey)
 	if err != nil {
 		t.Fatalf("db check: %v", err)
@@ -133,11 +182,10 @@ func TestDB_RegisterUser_AlreadyExists(t *testing.T) {
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob", Email: "bob@example.com"})
+	svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob@test.local", Email: "bob@test.local"})
 
-	// Use a fresh service so fakeUserManager doesn't block on duplicate.
 	svc2 := newTestSvc()
-	_, err := svc2.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob", Email: "bob2@example.com"})
+	_, err := svc2.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob@test.local", Email: "bob2@test.local"})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %v", err)
 	}
@@ -146,7 +194,7 @@ func TestDB_RegisterUser_AlreadyExists(t *testing.T) {
 func TestDB_GetUser_NotFound(t *testing.T) {
 	truncate(t)
 	svc := newTestSvc()
-	_, err := svc.GetUser(context.Background(), &pb.GetUserRequest{Username: "ghost"})
+	_, err := svc.GetUser(context.Background(), &pb.GetUserRequest{Username: "ghost@test.local"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)
 	}
@@ -157,11 +205,11 @@ func TestDB_GetUser_Found(t *testing.T) {
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	created, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "carol", Email: "carol@example.com"})
+	created, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "carol@test.local", Email: "carol@test.local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.GetUser(ctx, &pb.GetUserRequest{Username: "carol"})
+	got, err := svc.GetUser(ctx, &pb.GetUserRequest{Username: "carol@test.local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,16 +256,16 @@ func TestGRPC_RegisterUser_ResponseAndDB(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	resp, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "dave", Email: "dave@example.com"})
+	resp, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "dave@test.local", Email: "dave@test.local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Username != "dave" || resp.UserId == "" || len(resp.BtcPubkey) != 33 {
+	if resp.Username != "dave@test.local" || resp.UserId == "" || len(resp.BtcPubkey) != 33 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 
 	var dbUserID string
-	testPool.QueryRow(ctx, `SELECT user_id FROM users WHERE username = 'dave'`).Scan(&dbUserID)
+	testPool.QueryRow(ctx, `SELECT user_id FROM users WHERE username = 'dave@test.local'`).Scan(&dbUserID)
 	if dbUserID != resp.UserId {
 		t.Fatalf("DB user_id mismatch: resp=%s db=%s", resp.UserId, dbUserID)
 	}
@@ -229,9 +277,8 @@ func TestGRPC_RegisterUser_AlreadyExists_StatusCode(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve", Email: "eve@example.com"})
-	// Second call hits DB pre-check (same pool, row exists).
-	_, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve", Email: "eve2@example.com"})
+	client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve@test.local", Email: "eve@test.local"})
+	_, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve@test.local", Email: "eve2@test.local"})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %v", err)
 	}
@@ -242,7 +289,7 @@ func TestGRPC_GetUser_NotFound_StatusCode(t *testing.T) {
 	client, cleanup := newGRPCClient(t)
 	defer cleanup()
 
-	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Username: "nobody"})
+	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Username: "nobody@test.local"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)
 	}

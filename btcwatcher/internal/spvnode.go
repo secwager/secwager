@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb"
 	"github.com/lightninglabs/neutrino"
+	"github.com/lightninglabs/neutrino/headerfs"
 )
 
 // BlockEvent is delivered for each block connected to or disconnected from the chain.
@@ -28,7 +29,8 @@ type SPVNode interface {
 	// WatchAddresses registers additional addresses to monitor.
 	WatchAddresses(addrs []btcutil.Address) error
 	// Blocks returns a channel that receives BlockEvents until ctx is cancelled.
-	Blocks(ctx context.Context) (<-chan BlockEvent, error)
+	// startHeight 0 means watch forward from the current chain tip; >0 rescans from that height.
+	Blocks(ctx context.Context, startHeight int32) (<-chan BlockEvent, error)
 	// BestBlock returns the current synced chain tip height.
 	BestBlock(ctx context.Context) (int32, error)
 	// Stop shuts down the underlying node gracefully.
@@ -82,7 +84,7 @@ func (n *neutrinoSPVNode) WatchAddresses(addrs []btcutil.Address) error {
 	return nil
 }
 
-func (n *neutrinoSPVNode) Blocks(ctx context.Context) (<-chan BlockEvent, error) {
+func (n *neutrinoSPVNode) Blocks(ctx context.Context, startHeight int32) (<-chan BlockEvent, error) {
 	ch := make(chan BlockEvent, 16)
 	quit := make(chan struct{})
 
@@ -98,7 +100,11 @@ func (n *neutrinoSPVNode) Blocks(ctx context.Context) (<-chan BlockEvent, error)
 
 	blockCh := make(chan BlockEvent, 16)
 
-	rescanOpts := []neutrino.RescanOption{
+	rescanOpts := []neutrino.RescanOption{}
+	if startHeight > 0 {
+		rescanOpts = append(rescanOpts, neutrino.StartBlock(&headerfs.BlockStamp{Height: startHeight}))
+	}
+	rescanOpts = append(rescanOpts,
 		neutrino.QuitChan(quit),
 		neutrino.WatchAddrs(watchAddrs...),
 		neutrino.NotificationHandlers(rpcclient.NotificationHandlers{
@@ -119,7 +125,7 @@ func (n *neutrinoSPVNode) Blocks(ctx context.Context) (<-chan BlockEvent, error)
 				}
 			},
 		}),
-	}
+	)
 
 	r := neutrino.NewRescan(&neutrino.RescanChainSource{ChainService: n.cs}, rescanOpts...)
 

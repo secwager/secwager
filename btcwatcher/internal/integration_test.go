@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -24,17 +25,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btclog"
+	"github.com/lightninglabs/neutrino"
 
 	pb "github.com/secwager/secwager/proto/gen/cashier"
 )
 
-// integTestAddr is a fresh testnet3 P2WPKH address generated for this test.
-// Send any amount of testnet3 BTC here while the test is running.
-// WIF (for reference): cMjxxx28qg4i4QkVnx5A5eoZmJhxsDEkPX2EULtBf6RUv4NfZB4i
 const (
-	integTestAddr    = "tb1qt8ffv6rf7xtsrprkm8ul7ac8p0r47rahymuhc5"
 	integTestUserID  = "integration-user-1"
 	integTestDataDir = "/tmp/btcwatcher-integration-test"
 )
@@ -99,6 +97,15 @@ func runMigrationsForTest(t *testing.T, dsn, migrationsDir string) {
 	}
 }
 
+// testLogWriter routes an io.Writer into t.Log, so btclog output
+// obeys normal go test rules (shown with -v, suppressed on pass).
+type testLogWriter struct{ t *testing.T }
+
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
 // fakeCashierGRPCServer wraps fakeCashierClient as a gRPC server so the
 // Watcher's grpcCashierClient can call it over a bufconn.
 type fakeCashierGRPCServer struct {
@@ -122,14 +129,110 @@ func (s *fakeCashierGRPCServer) ConfirmDeposit(ctx context.Context, req *pb.Conf
 	return &pb.CashierResponse{}, nil
 }
 
+// scrapedTx holds the details of a real testnet transaction extracted during the scrape phase.
+type scrapedTx struct {
+	addr        string
+	txid        string
+	vout        int
+	satoshis    int64
+	blockHeight int32
+}
+
+// scrapeTransaction waits for neutrino to reach the chain tip, then walks back
+// a few blocks to find the first output with a parseable address. No private
+// key or faucet required — we just borrow a random on-chain output as our test
+// deposit target.
+func scrapeTransaction(t *testing.T, ctx context.Context, node *neutrinoSPVNode, params *chaincfg.Params) scrapedTx {
+	t.Helper()
+
+	// Route neutrino's internal btclog output through t.Log so it obeys
+	// normal go test rules: visible with -v, suppressed on pass.
+	ntrLogger := btclog.NewBackend(&testLogWriter{t}).Logger("NTRN")
+	ntrLogger.SetLevel(btclog.LevelInfo)
+	neutrino.UseLogger(ntrLogger)
+
+	t.Log("scrape: waiting for neutrino header sync...")
+
+	// Print best-block height every 5 s so progress is visible.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+				bs, err := node.cs.BestBlock()
+				if err == nil {
+					t.Logf("sync: height=%d current=%v", bs.Height, node.cs.IsCurrent())
+				}
+			}
+		}
+	}()
+
+	for !node.cs.IsCurrent() {
+		select {
+		case <-ctx.Done():
+			t.Fatal("context expired waiting for header sync")
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	bs, err := node.cs.BestBlock()
+	if err != nil {
+		t.Fatalf("scrape: BestBlock: %v", err)
+	}
+	t.Logf("scrape: synced to height %d", bs.Height)
+
+	// Try blocks from tip-2 backward until we find a usable output.
+	for delta := int32(2); delta <= 20; delta++ {
+		targetHeight := bs.Height - delta
+		if targetHeight <= 0 {
+			break
+		}
+
+		header, err := node.cs.BlockHeaders.FetchHeaderByHeight(uint32(targetHeight))
+		if err != nil {
+			t.Logf("scrape: FetchHeaderByHeight(%d): %v — skipping", targetHeight, err)
+			continue
+		}
+		hash := header.BlockHash()
+
+		block, err := node.cs.GetBlock(hash)
+		if err != nil {
+			t.Logf("scrape: GetBlock at %d: %v — skipping", targetHeight, err)
+			continue
+		}
+
+		for _, tx := range block.Transactions() {
+			for vout, out := range tx.MsgTx().TxOut {
+				addr, err := outputAddress(out.PkScript, params)
+				if err != nil || out.Value <= 0 {
+					continue
+				}
+				return scrapedTx{
+					addr:        addr,
+					txid:        tx.Hash().String(),
+					vout:        vout,
+					satoshis:    out.Value,
+					blockHeight: targetHeight,
+				}
+			}
+		}
+		t.Logf("scrape: no usable output in block %d, trying one block earlier", targetHeight)
+	}
+
+	t.Fatal("scrape: no addressable output found in any of the tried blocks")
+	return scrapedTx{}
+}
+
 // TestIntegration_DepositEscrowAndConfirm runs a neutrino node on testnet3,
-// waits for it to sync past a known historical transaction, and asserts that
-// the Watcher correctly calls DepositEscrowed then ConfirmDeposit.
+// scrapes a real confirmed transaction from near the chain tip, then replays
+// the watcher from just before that block to assert DepositEscrowed and
+// ConfirmDeposit are called in order.
 func TestIntegration_DepositEscrowAndConfirm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
 
 	migDir := migrationsPath(t)
@@ -142,13 +245,32 @@ func TestIntegration_DepositEscrowAndConfirm(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// User store: one user mapped to the known testnet3 address.
+	if err := os.MkdirAll(integTestDataDir, 0755); err != nil {
+		t.Fatalf("mkdir dataDir: %v", err)
+	}
+	params := &chaincfg.TestNet3Params
+
+	node, err := NewNeutrinoSPVNode(integTestDataDir, params, nil)
+	if err != nil {
+		t.Fatalf("neutrino node: %v", err)
+	}
+	defer node.Stop()
+
+	// Phase 1: scrape a real transaction from near the current chain tip.
+	nnode := node.(*neutrinoSPVNode)
+	found := scrapeTransaction(t, ctx, nnode, params)
+	t.Logf("scraped: txid=%s vout=%d satoshis=%d height=%d addr=%s",
+		found.txid, found.vout, found.satoshis, found.blockHeight, found.addr)
+
+	// Phase 2: run the watcher starting from one block before the found tx.
+	// The watcher will scan the handful of blocks from startHeight to tip,
+	// triggering DepositEscrowed and ConfirmDeposit during initial catch-up.
+
 	userStore := newFakeUserStore(UserRecord{
 		UserID:  integTestUserID,
-		BtcAddr: integTestAddr,
+		BtcAddr: found.addr,
 	})
 
-	// Cashier: in-process fake exposed over bufconn.
 	fakeCashier := newFakeCashierClient()
 	lis := bufconn.Listen(1 << 20)
 	grpcSrv := grpc.NewServer()
@@ -167,19 +289,6 @@ func TestIntegration_DepositEscrowAndConfirm(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Neutrino node on testnet3 via DNS peer discovery.
-	dataDir := integTestDataDir
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		t.Fatalf("mkdir dataDir: %v", err)
-	}
-	params := &chaincfg.TestNet3Params
-
-	node, err := NewNeutrinoSPVNode(dataDir, params, nil)
-	if err != nil {
-		t.Fatalf("neutrino node: %v", err)
-	}
-	defer node.Stop()
-
 	w := NewWatcher(
 		node,
 		NewPostgresTxStore(pool),
@@ -189,46 +298,38 @@ func TestIntegration_DepositEscrowAndConfirm(t *testing.T) {
 			Confirmations: 1,
 			PollInterval:  time.Minute,
 			NetworkParams: params,
+			StartHeight:   found.blockHeight - 1,
 		},
 	)
 
 	watcherDone := make(chan error, 1)
 	go func() { watcherDone <- w.Run(ctx) }()
 
-	// Neutrino syncs to the current chain tip, then watches forward.
-	// Send any amount of testnet3 BTC to the address below to trigger the test.
-	t.Logf("========================================================")
-	t.Logf("SEND TESTNET3 BTC TO: %s", integTestAddr)
-	t.Logf("Waiting up to 10 minutes for a payment to arrive...")
-	t.Logf("========================================================")
-
+	// Both assertions should fire during the initial catch-up scan.
+	// The scraped tx has at least 2 confirmations already, so no live blocks needed.
 	waitFor(t, func() bool {
 		fakeCashier.mu.Lock()
 		defer fakeCashier.mu.Unlock()
 		return len(fakeCashier.escrowedCalls) > 0
-	}, 580*time.Second)
+	}, 10*time.Minute)
 
 	fakeCashier.mu.Lock()
 	ec := len(fakeCashier.escrowedCalls)
 	fakeCashier.mu.Unlock()
-
 	if ec == 0 {
-		t.Fatal("DepositEscrowed was never called — no payment detected within timeout")
+		t.Fatal("DepositEscrowed was never called")
 	}
 	t.Logf("DepositEscrowed called %d time(s)", ec)
 
-	// With Confirmations=1, ConfirmDeposit fires on the next block.
-	t.Log("waiting for ConfirmDeposit (1 confirmation)...")
 	waitFor(t, func() bool {
 		fakeCashier.mu.Lock()
 		defer fakeCashier.mu.Unlock()
 		return len(fakeCashier.confirmCalls) > 0
-	}, 30*time.Minute)
+	}, 10*time.Minute)
 
 	fakeCashier.mu.Lock()
 	cc := len(fakeCashier.confirmCalls)
 	fakeCashier.mu.Unlock()
-
 	if cc == 0 {
 		t.Fatal("ConfirmDeposit was never called")
 	}

@@ -15,6 +15,7 @@ type Config struct {
 	Confirmations int
 	PollInterval  time.Duration
 	NetworkParams *chaincfg.Params
+	StartHeight   int32 // 0 = watch forward from current tip
 }
 
 // Watcher ties together the SPVNode, TxStore, UserStore, and CashierClient
@@ -42,7 +43,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	pollTicker := time.NewTicker(w.cfg.PollInterval)
 	defer pollTicker.Stop()
 
-	blockCh, err := w.node.Blocks(ctx)
+	blockCh, err := w.node.Blocks(ctx, w.cfg.StartHeight)
 	if err != nil {
 		return fmt.Errorf("start block stream: %w", err)
 	}

@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.60.2
 	github.com/aws/aws-sdk-go-v2/service/kms v1.52.0
-	github.com/btcsuite/btcd v0.25.0
+	github.com/btcsuite/btcd v0.24.3-0.20250318170759-4f4ea81776d6
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/btcsuite/btcd/btcutil v1.2.0
 	github.com/golang-migrate/migrate/v4 v4.19.1

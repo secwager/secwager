@@ -27,7 +27,7 @@ func (f *fakeSPVNode) WatchAddresses(addrs []btcutil.Address) error {
 	return nil
 }
 
-func (f *fakeSPVNode) Blocks(ctx context.Context) (<-chan BlockEvent, error) {
+func (f *fakeSPVNode) Blocks(ctx context.Context, _ int32) (<-chan BlockEvent, error) {
 	ch := make(chan BlockEvent, 64)
 	go func() {
 		defer close(ch)

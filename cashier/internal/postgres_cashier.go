@@ -262,6 +262,32 @@ func (c *PostgresCashier) ConfirmDeposit(ctx context.Context, userID, depositRef
 	})
 }
 
+func (c *PostgresCashier) CancelDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	if depositRef == "" {
+		return AccountSnapshot{}, fmt.Errorf("deposit_ref is required")
+	}
+	return c.withIdempotency(ctx, userID, "cancel:"+depositRef, func(tx pgx.Tx) (AccountSnapshot, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE accounts
+			   SET gross_balance = gross_balance - $2,
+			       escrowed      = escrowed - $2,
+			       version       = version + 1,
+			       updated_at    = clock_timestamp()
+			 WHERE user_id = $1 AND escrowed >= $2`,
+			userID, amount)
+		if err != nil {
+			return AccountSnapshot{}, fmt.Errorf("cancel_deposit: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return AccountSnapshot{}, &InsufficientFundsError{Msg: "escrowed balance insufficient to cancel deposit"}
+		}
+		return c.fetchSnapshot(ctx, tx, userID)
+	})
+}
+
 // withIdempotency wraps fn in a transaction with idempotency key deduplication.
 // On a cache hit it returns the current account state (not the frozen post-op snapshot)
 // so the caller always sees live balances, and sets IsReplay=true so they can distinguish

@@ -12,10 +12,18 @@ import (
 
 // Config holds Watcher runtime parameters.
 type Config struct {
-	Confirmations int
-	PollInterval  time.Duration
-	NetworkParams *chaincfg.Params
-	StartHeight   int32 // 0 = watch forward from current tip
+	Confirmations        int
+	PollInterval         time.Duration
+	CashierRetryInterval time.Duration // how often to retry pending cashier calls independent of block events
+	ReorgCancelAge       time.Duration // min time after reorg before cancelling a dangling escrow; default 20m
+	NetworkParams        *chaincfg.Params
+	StartHeight          int32 // 0 = watch forward from current tip
+}
+
+// leaderChecker allows the Watcher to ask whether this node is the current
+// leader without importing the etcd client. Tests inject a stub.
+type leaderChecker interface {
+	IsLeader() bool
 }
 
 // Watcher ties together the SPVNode, TxStore, UserStore, and CashierClient
@@ -25,12 +33,15 @@ type Watcher struct {
 	txs     TxStore
 	users   UserStore
 	cashier CashierClient
+	leader  leaderChecker
 	cfg     Config
 }
 
-// NewWatcher constructs a Watcher.
-func NewWatcher(node SPVNode, txs TxStore, users UserStore, cashier CashierClient, cfg Config) *Watcher {
-	return &Watcher{node: node, txs: txs, users: users, cashier: cashier, cfg: cfg}
+// NewWatcher constructs a Watcher. leader gates cashier calls: only the node
+// holding the etcd lease will call DepositEscrowed / ConfirmDeposit. All nodes
+// insert deposits and handle reorgs regardless.
+func NewWatcher(node SPVNode, txs TxStore, users UserStore, cashier CashierClient, leader leaderChecker, cfg Config) *Watcher {
+	return &Watcher{node: node, txs: txs, users: users, cashier: cashier, leader: leader, cfg: cfg}
 }
 
 // Run starts the Watcher and blocks until ctx is cancelled.
@@ -42,6 +53,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 	pollTicker := time.NewTicker(w.cfg.PollInterval)
 	defer pollTicker.Stop()
+
+	cashierInterval := w.cfg.CashierRetryInterval
+	if cashierInterval == 0 {
+		cashierInterval = 30 * time.Second
+	}
+	cashierTicker := time.NewTicker(cashierInterval)
+	defer cashierTicker.Stop()
 
 	blockCh, err := w.node.Blocks(ctx, w.cfg.StartHeight)
 	if err != nil {
@@ -57,6 +75,15 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if err := w.pollNewUsers(ctx, addrIndex); err != nil {
 				// Non-fatal: log and continue.
 				_ = err
+			}
+
+		case <-cashierTicker.C:
+			if w.leader.IsLeader() {
+				w.retryEscrows(ctx)
+				w.cancelReorgedEscrows(ctx)
+				if height, err := w.node.BestBlock(ctx); err == nil {
+					w.checkConfirmations(ctx, height)
+				}
 			}
 
 		case evt, ok := <-blockCh:
@@ -141,8 +168,10 @@ func (w *Watcher) handleBlockConnected(ctx context.Context, evt BlockEvent, addr
 			})
 		}
 	}
-	w.retryEscrows(ctx)
-	w.checkConfirmations(ctx, evt.Height)
+	if w.leader.IsLeader() {
+		w.retryEscrows(ctx)
+		w.checkConfirmations(ctx, evt.Height)
+	}
 }
 
 func (w *Watcher) retryEscrows(ctx context.Context) {
@@ -170,6 +199,24 @@ func (w *Watcher) checkConfirmations(ctx context.Context, currentHeight int32) {
 			continue
 		}
 		_ = w.txs.MarkConfirmed(ctx, d.Txid, d.Vout)
+	}
+}
+
+func (w *Watcher) cancelReorgedEscrows(ctx context.Context) {
+	age := w.cfg.ReorgCancelAge
+	if age == 0 {
+		age = 20 * time.Minute
+	}
+	rows, err := w.txs.ListReorgedEscrowed(ctx, age)
+	if err != nil {
+		return
+	}
+	for _, d := range rows {
+		ref := depositRef(d.Txid, d.Vout)
+		if err := w.cashier.CancelDeposit(ctx, d.UserID, d.Satoshis, ref); err != nil {
+			continue
+		}
+		_ = w.txs.MarkCancelled(ctx, d.Txid, d.Vout)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 type CashierClient interface {
 	DepositEscrowed(ctx context.Context, userID string, satoshis int64, depositRef string) error
 	ConfirmDeposit(ctx context.Context, userID string, satoshis int64, depositRef string) error
+	CancelDeposit(ctx context.Context, userID string, satoshis int64, depositRef string) error
 }
 
 type grpcCashierClient struct {
@@ -33,6 +34,15 @@ func (c *grpcCashierClient) DepositEscrowed(ctx context.Context, userID string, 
 
 func (c *grpcCashierClient) ConfirmDeposit(ctx context.Context, userID string, satoshis int64, depositRef string) error {
 	_, err := c.client.ConfirmDeposit(ctx, &pb.ConfirmDepositRequest{
+		UserId:     userID,
+		Amount:     satoshis,
+		DepositRef: depositRef,
+	})
+	return err
+}
+
+func (c *grpcCashierClient) CancelDeposit(ctx context.Context, userID string, satoshis int64, depositRef string) error {
+	_, err := c.client.CancelDeposit(ctx, &pb.CancelDepositRequest{
 		UserId:     userID,
 		Amount:     satoshis,
 		DepositRef: depositRef,

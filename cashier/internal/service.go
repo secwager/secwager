@@ -81,6 +81,17 @@ func (s *CashierService) ConfirmDeposit(ctx context.Context, req *pb.ConfirmDepo
 	return toResponse(snap, err)
 }
 
+func (s *CashierService) CancelDeposit(ctx context.Context, req *pb.CancelDepositRequest) (*pb.CashierResponse, error) {
+	if req.Amount <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
+	}
+	if req.DepositRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "deposit_ref is required")
+	}
+	snap, err := s.cashier.CancelDeposit(ctx, req.UserId, req.DepositRef, req.Amount)
+	return toResponse(snap, err)
+}
+
 func toResponse(snap AccountSnapshot, err error) (*pb.CashierResponse, error) {
 	if err != nil {
 		return nil, toGRPCError(err)

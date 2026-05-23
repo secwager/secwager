@@ -28,4 +28,8 @@ type Cashier interface {
 	// ConfirmDeposit decrements escrowed by amount, leaving gross_balance unchanged.
 	// Available balance increases. Idempotent via "confirm:"+depositRef key.
 	ConfirmDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error)
+	// CancelDeposit reverses a DepositEscrowed call after a reorg where the txn
+	// did not reappear in the canonical chain. Decrements both gross_balance and
+	// escrowed. Idempotent via "cancel:"+depositRef key.
+	CancelDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error)
 }

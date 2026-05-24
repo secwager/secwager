@@ -9,14 +9,15 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/secwager/secwager/registry/internal"
 	pb "github.com/secwager/secwager/proto/gen/registry"
+	"github.com/secwager/secwager/registry/internal"
 	"google.golang.org/grpc"
 )
 
@@ -24,15 +25,10 @@ func main() {
 	dsn := mustEnv("REGISTRY_PG_DSN")
 	listenAddr := envOr("REGISTRY_LISTEN_ADDR", "0.0.0.0:50053")
 	poolSize := optInt(envOr("REGISTRY_PG_POOL_SIZE", "10"))
-	fixturePath := envOr("REGISTRY_FIXTURE_FILE", "data/fixtures.json")
+	refreshInterval := optDuration(envOr("REGISTRY_REF_REFRESH_INTERVAL", "5m"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	ref, err := internal.LoadFixture(fixturePath)
-	if err != nil {
-		log.Fatalf("load fixture: %v", err)
-	}
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -49,8 +45,11 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
+	cache := internal.NewRefCache(pool)
+	cache.Start(ctx, refreshInterval)
+
 	store := internal.NewPGStore(pool)
-	svc := internal.NewRegistryService(ref, store)
+	svc := internal.NewRegistryService(cache, store)
 
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -107,4 +106,12 @@ func envOr(key, def string) string {
 func optInt(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func optDuration(s string) time.Duration {
+	d, _ := time.ParseDuration(s)
+	if d <= 0 {
+		d = 5 * time.Minute
+	}
+	return d
 }

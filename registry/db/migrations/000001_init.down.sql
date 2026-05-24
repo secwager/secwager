@@ -1,3 +1,9 @@
 DROP TABLE IF EXISTS instrument_leg_entities;
 DROP TABLE IF EXISTS instrument_legs;
 DROP TABLE IF EXISTS instruments;
+DROP TABLE IF EXISTS game_player_stats;
+DROP TABLE IF EXISTS games;
+DROP TABLE IF EXISTS players;
+DROP TABLE IF EXISTS teams;
+DROP TABLE IF EXISTS seasons;
+DROP TABLE IF EXISTS leagues;

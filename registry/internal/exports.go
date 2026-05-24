@@ -1,10 +1,19 @@
 package internal
 
-import "github.com/jackc/pgx/v5/pgxpool"
+import (
+	"context"
 
-// LoadFixture is the exported entry point for main.
-func LoadFixture(path string) (*refStore, error) {
-	return loadFixture(path)
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// NewRefCache creates a background-refresh cache backed by Postgres.
+func NewRefCache(pool *pgxpool.Pool) *RefCache {
+	return newRefCache(pool)
+}
+
+// LoadRefFromDB performs a one-shot load of ref data from DB (used in tests).
+func LoadRefFromDB(ctx context.Context, pool *pgxpool.Pool) (*refStore, error) {
+	return loadRefFromDB(ctx, pool)
 }
 
 // NewPGStore is the exported entry point for main.

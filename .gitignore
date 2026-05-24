@@ -41,3 +41,10 @@
 
 # CMake build directories
 build/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+# .terraform.lock.hcl is intentionally tracked (pins provider versions)

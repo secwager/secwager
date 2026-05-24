@@ -9,12 +9,18 @@ terraform {
 }
 
 provider "aws" {
-  region = var.region
+  region  = var.region
+  profile = var.aws_profile
 }
 
 variable "region" {
   type    = string
   default = "us-east-1"
+}
+
+variable "aws_profile" {
+  type    = string
+  default = "secwager-dev"
 }
 
 variable "bucket_name" {

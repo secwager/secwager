@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
@@ -54,10 +55,11 @@ func (f *fakeSPVNode) BestBlock(_ context.Context) (int32, error) { return 0, ni
 func (f *fakeSPVNode) Stop() error                                 { return nil }
 func (f *fakeSPVNode) push(evt BlockEvent)                         { f.blockFeed <- evt }
 
-// fakeDepositState tracks both escrowed and confirmed for a deposit.
+// fakeDepositState tracks escrowed, confirmed, and reorg state for a deposit.
 type fakeDepositState struct {
 	Deposit
 	confirmed bool
+	reorgedAt *time.Time
 }
 
 // fakeTxStore2 is an in-memory TxStore.
@@ -78,7 +80,12 @@ func (s *fakeTxStore2) Insert(_ context.Context, d Deposit) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := s.key(d.Txid, d.Vout)
-	if _, exists := s.deposits[k]; exists {
+	if existing, exists := s.deposits[k]; exists {
+		// Un-reorg if the txn reappears.
+		if existing.reorgedAt != nil {
+			existing.SeenAtHeight = d.SeenAtHeight
+			existing.reorgedAt = nil
+		}
 		return nil
 	}
 	s.deposits[k] = &fakeDepositState{Deposit: d}
@@ -90,7 +97,7 @@ func (s *fakeTxStore2) ListNotEscrowed(_ context.Context) ([]Deposit, error) {
 	defer s.mu.Unlock()
 	var out []Deposit
 	for _, ds := range s.deposits {
-		if !ds.Escrowed {
+		if !ds.Escrowed && ds.reorgedAt == nil {
 			out = append(out, ds.Deposit)
 		}
 	}
@@ -102,7 +109,20 @@ func (s *fakeTxStore2) ListReadyToConfirm(_ context.Context, minDepth int, curre
 	defer s.mu.Unlock()
 	var out []Deposit
 	for _, ds := range s.deposits {
-		if ds.Escrowed && !ds.confirmed && int(currentHeight-ds.SeenAtHeight) >= minDepth {
+		if ds.Escrowed && !ds.confirmed && ds.reorgedAt == nil && int(currentHeight-ds.SeenAtHeight) >= minDepth {
+			out = append(out, ds.Deposit)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeTxStore2) ListReorgedEscrowed(_ context.Context, minAge time.Duration) ([]Deposit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	threshold := time.Now().Add(-minAge)
+	var out []Deposit
+	for _, ds := range s.deposits {
+		if ds.reorgedAt != nil && ds.Escrowed && !ds.confirmed && ds.reorgedAt.Before(threshold) {
 			out = append(out, ds.Deposit)
 		}
 	}
@@ -127,12 +147,24 @@ func (s *fakeTxStore2) MarkConfirmed(_ context.Context, txid string, vout int) e
 	return nil
 }
 
+func (s *fakeTxStore2) MarkCancelled(_ context.Context, txid string, vout int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.deposits, s.key(txid, vout))
+	return nil
+}
+
 func (s *fakeTxStore2) DeleteFromHeight(_ context.Context, height int32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	for k, ds := range s.deposits {
 		if ds.SeenAtHeight >= height && !ds.confirmed {
-			delete(s.deposits, k)
+			if ds.Escrowed {
+				ds.reorgedAt = &now // soft delete: cashier holds funds
+			} else {
+				delete(s.deposits, k) // hard delete: cashier was never notified
+			}
 		}
 	}
 	return nil
@@ -143,6 +175,7 @@ type fakeCashierClient struct {
 	mu             sync.Mutex
 	escrowedCalls  []cashierCall
 	confirmCalls   []cashierCall
+	cancelCalls    []cashierCall
 	escrowErr      error
 	confirmErr     error
 	idempotencySet map[string]struct{}
@@ -188,6 +221,18 @@ func (c *fakeCashierClient) ConfirmDeposit(_ context.Context, userID string, sat
 	return nil
 }
 
+func (c *fakeCashierClient) CancelDeposit(_ context.Context, userID string, satoshis int64, depositRef string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := "cancel:" + depositRef
+	if _, seen := c.idempotencySet[key]; seen {
+		return nil
+	}
+	c.idempotencySet[key] = struct{}{}
+	c.cancelCalls = append(c.cancelCalls, cashierCall{userID, satoshis, depositRef})
+	return nil
+}
+
 // fakeUserStore holds a static list of user records.
 type fakeUserStore struct {
 	mu      sync.Mutex
@@ -212,12 +257,18 @@ func (s *fakeUserStore) add(r UserRecord) {
 	s.records = append(s.records, r)
 }
 
+// alwaysLeader is a leaderChecker stub that always reports leadership.
+type alwaysLeader struct{}
+
+func (alwaysLeader) IsLeader() bool { return true }
+
 // Ensure fakes satisfy their interfaces at compile time.
 var (
 	_ SPVNode       = (*fakeSPVNode)(nil)
 	_ TxStore       = (*fakeTxStore2)(nil)
 	_ CashierClient = (*fakeCashierClient)(nil)
 	_ UserStore     = (*fakeUserStore)(nil)
+	_ leaderChecker = alwaysLeader{}
 )
 
 // Suppress unused import of wire.

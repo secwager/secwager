@@ -11,6 +11,7 @@ service CashierService {
     rpc CheckAvailable (CheckRequest)          returns (CashierResponse);
     rpc DepositEscrowed(DepositEscrowedRequest) returns (CashierResponse);
     rpc ConfirmDeposit (ConfirmDepositRequest)  returns (CashierResponse);
+    rpc CancelDeposit  (CancelDepositRequest)   returns (CashierResponse);
 }
 
 message DepositRequest {
@@ -49,6 +50,12 @@ message ConfirmDepositRequest {
     string user_id     = 1;
     int64  amount      = 2;  // caller supplies amount; no escrow_entries lookup needed
     string deposit_ref = 3;  // idempotency key: stored as "confirm:"+deposit_ref internally
+}
+
+message CancelDepositRequest {
+    string user_id     = 1;
+    int64  amount      = 2;  // must equal the amount from DepositEscrowedRequest
+    string deposit_ref = 3;  // idempotency key: stored as "cancel:"+deposit_ref internally
 }
 
 // Returned by every RPC. Spendable = gross_balance - escrowed.

@@ -16,6 +16,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -27,11 +28,20 @@ func main() {
 	pgDSN := mustEnv("BTCWATCHER_PG_DSN")
 	userRegDSN := mustEnv("BTCWATCHER_USERREG_PG_DSN")
 	cashierAddr := mustEnv("BTCWATCHER_CASHIER_ADDR")
+	etcdEndpointsRaw := mustEnv("ETCD_ENDPOINTS")
 	confirmations := parseInt(envOr("BTCWATCHER_CONFIRMATIONS", "6"))
+	leaseTTL := parseInt(envOr("BTCWATCHER_LEASE_TTL", "60"))
 	network := envOr("BTCWATCHER_NETWORK", "mainnet")
 	dataDir := envOr("BTCWATCHER_DATA_DIR", "/data")
 	peersRaw := envOr("BTCWATCHER_PEERS", "")
 	pollInterval := parseDuration(envOr("BTCWATCHER_POLL_INTERVAL", "60s"))
+	cashierRetryInterval := parseDuration(envOr("BTCWATCHER_CASHIER_RETRY_INTERVAL", "30s"))
+	reorgCancelAge := parseDuration(envOr("BTCWATCHER_REORG_CANCEL_AGE", "20m"))
+
+	nodeID, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("get hostname for node ID: %v", err)
+	}
 
 	runMigrations(pgDSN)
 
@@ -39,6 +49,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   strings.Split(etcdEndpointsRaw, ","),
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("etcd client: %v", err)
+	}
+	defer etcdClient.Close()
+
+	elector := internal.NewLeaderElector(etcdClient, nodeID, leaseTTL)
+	go elector.Run(ctx)
 
 	pool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
@@ -74,10 +96,13 @@ func main() {
 		internal.NewPostgresTxStore(pool),
 		internal.NewPostgresUserStore(userPool),
 		internal.NewGRPCCashierClient(conn),
+		elector,
 		internal.Config{
-			Confirmations: confirmations,
-			PollInterval:  pollInterval,
-			NetworkParams: params,
+			Confirmations:        confirmations,
+			PollInterval:         pollInterval,
+			CashierRetryInterval: cashierRetryInterval,
+			ReorgCancelAge:       reorgCancelAge,
+			NetworkParams:        params,
 		},
 	)
 

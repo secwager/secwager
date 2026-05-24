@@ -176,6 +176,32 @@ func (f *FakeCashier) ConfirmDeposit(ctx context.Context, userID, depositRef str
 	return f.snapshot(acc), nil
 }
 
+func (f *FakeCashier) CancelDeposit(ctx context.Context, userID, depositRef string, amount int64) (AccountSnapshot, error) {
+	if amount <= 0 {
+		return AccountSnapshot{}, fmt.Errorf("amount must be > 0")
+	}
+	cancelKey := "cancel:" + depositRef
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.idempotencyKeys[cancelKey]; ok {
+		snap := f.snapshot(f.getOrCreate(userID))
+		snap.IsReplay = true
+		return snap, nil
+	}
+	acc, ok := f.accounts[userID]
+	if !ok {
+		return AccountSnapshot{}, &UnknownUserError{Msg: "user not found: " + userID}
+	}
+	if acc.escrowed < amount {
+		return AccountSnapshot{}, &InsufficientFundsError{Msg: fmt.Sprintf("escrowed=%d < amount=%d", acc.escrowed, amount)}
+	}
+	acc.grossBalance -= amount
+	acc.escrowed -= amount
+	f.idempotencyKeys[cancelKey] = struct{}{}
+	return f.snapshot(acc), nil
+}
+
 func (f *FakeCashier) getOrCreate(userID string) *fakeAccount {
 	if acc, ok := f.accounts[userID]; ok {
 		return acc

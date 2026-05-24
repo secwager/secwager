@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,18 +19,25 @@ type Deposit struct {
 
 // TxStore manages the btc_deposits table.
 type TxStore interface {
-	// Insert records a newly-seen output. No-op if (txid, vout) already exists.
+	// Insert records a newly-seen output. If the row exists and was soft-deleted
+	// by a reorg, it is un-reorged (reorged_at cleared). No-op if active.
 	Insert(ctx context.Context, d Deposit) error
-	// ListNotEscrowed returns rows where escrowed = FALSE (cashier not yet notified).
+	// ListNotEscrowed returns active (not reorged) rows where escrowed = FALSE.
 	ListNotEscrowed(ctx context.Context) ([]Deposit, error)
-	// ListReadyToConfirm returns escrowed=TRUE, confirmed=FALSE rows that have
-	// reached the required confirmation depth.
+	// ListReadyToConfirm returns active escrowed=TRUE, confirmed=FALSE rows that
+	// have reached the required confirmation depth.
 	ListReadyToConfirm(ctx context.Context, minDepth int, currentHeight int32) ([]Deposit, error)
+	// ListReorgedEscrowed returns soft-deleted rows that are still escrowed in the
+	// cashier and have been reorged for at least minAge (giving the txn time to
+	// reappear in the canonical chain before the escrow is cancelled).
+	ListReorgedEscrowed(ctx context.Context, minAge time.Duration) ([]Deposit, error)
 	// MarkEscrowed sets escrowed=TRUE for the given (txid, vout).
 	MarkEscrowed(ctx context.Context, txid string, vout int) error
 	// MarkConfirmed sets confirmed=TRUE for the given (txid, vout).
 	MarkConfirmed(ctx context.Context, txid string, vout int) error
-	// DeleteFromHeight removes unconfirmed rows at or above height (re-org handling).
+	// MarkCancelled hard-deletes a deposit after its cashier escrow has been reversed.
+	MarkCancelled(ctx context.Context, txid string, vout int) error
+	// DeleteFromHeight soft-deletes unconfirmed rows at or above height (reorg handling).
 	DeleteFromHeight(ctx context.Context, height int32) error
 }
 
@@ -46,7 +54,9 @@ func (s *postgresTxStore) Insert(ctx context.Context, d Deposit) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO btc_deposits (txid, vout, user_id, satoshis, seen_at_height)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (txid, vout) DO NOTHING`,
+		ON CONFLICT (txid, vout) DO UPDATE
+		  SET seen_at_height = EXCLUDED.seen_at_height, reorged_at = NULL
+		  WHERE btc_deposits.reorged_at IS NOT NULL`,
 		d.Txid, d.Vout, d.UserID, d.Satoshis, d.SeenAtHeight)
 	return err
 }
@@ -55,7 +65,7 @@ func (s *postgresTxStore) ListNotEscrowed(ctx context.Context) ([]Deposit, error
 	rows, err := s.pool.Query(ctx, `
 		SELECT txid, vout, user_id, satoshis, seen_at_height
 		FROM btc_deposits
-		WHERE escrowed = FALSE`)
+		WHERE escrowed = FALSE AND reorged_at IS NULL`)
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +78,25 @@ func (s *postgresTxStore) ListReadyToConfirm(ctx context.Context, minDepth int, 
 		SELECT txid, vout, user_id, satoshis, seen_at_height
 		FROM btc_deposits
 		WHERE escrowed = TRUE AND confirmed = FALSE
+		  AND reorged_at IS NULL
 		  AND $1 - seen_at_height >= $2`,
 		currentHeight, minDepth)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeposits(rows)
+}
+
+func (s *postgresTxStore) ListReorgedEscrowed(ctx context.Context, minAge time.Duration) ([]Deposit, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT txid, vout, user_id, satoshis, seen_at_height
+		FROM btc_deposits
+		WHERE reorged_at IS NOT NULL
+		  AND escrowed = TRUE
+		  AND confirmed = FALSE
+		  AND reorged_at < NOW() - ($1 * INTERVAL '1 millisecond')`,
+		minAge.Milliseconds())
 	if err != nil {
 		return nil, err
 	}
@@ -91,9 +118,26 @@ func (s *postgresTxStore) MarkConfirmed(ctx context.Context, txid string, vout i
 	return err
 }
 
-func (s *postgresTxStore) DeleteFromHeight(ctx context.Context, height int32) error {
+func (s *postgresTxStore) MarkCancelled(ctx context.Context, txid string, vout int) error {
 	_, err := s.pool.Exec(ctx,
-		`DELETE FROM btc_deposits WHERE seen_at_height >= $1 AND confirmed = FALSE`,
+		`DELETE FROM btc_deposits WHERE txid = $1 AND vout = $2`,
+		txid, vout)
+	return err
+}
+
+func (s *postgresTxStore) DeleteFromHeight(ctx context.Context, height int32) error {
+	// Soft-delete escrowed deposits — cashier holds funds and must be notified to cancel.
+	_, err := s.pool.Exec(ctx,
+		`UPDATE btc_deposits SET reorged_at = NOW()
+		 WHERE seen_at_height >= $1 AND confirmed = FALSE AND escrowed = TRUE`,
+		height)
+	if err != nil {
+		return err
+	}
+	// Hard-delete unescrowed deposits — cashier was never notified, safe to remove.
+	_, err = s.pool.Exec(ctx,
+		`DELETE FROM btc_deposits
+		 WHERE seen_at_height >= $1 AND confirmed = FALSE AND escrowed = FALSE`,
 		height)
 	return err
 }

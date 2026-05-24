@@ -40,7 +40,7 @@ func connectedEvent(height int32, pkScript []byte, satoshis int64) BlockEvent {
 }
 
 func testWatcher(node *fakeSPVNode, txs *fakeTxStore2, cashier *fakeCashierClient, users *fakeUserStore, confs int) *Watcher {
-	return NewWatcher(node, txs, users, cashier, Config{
+	return NewWatcher(node, txs, users, cashier, alwaysLeader{}, Config{
 		Confirmations: confs,
 		PollInterval:  time.Hour,
 		NetworkParams: testParams,
@@ -255,13 +255,79 @@ func TestReorg_BlockDisconnected(t *testing.T) {
 	<-done
 }
 
+func TestReorg_CancelEscrow(t *testing.T) {
+	node := newFakeSPVNode()
+	txs := newFakeTxStore2()
+	cashier := newFakeCashierClient()
+	users := newFakeUserStore(UserRecord{UserID: testUserID, BtcAddr: testAddr})
+
+	// Slow ticker so we have time to verify soft-delete state before cancel fires.
+	// Tiny ReorgCancelAge so the cancel fires on the first tick after the reorg.
+	w := NewWatcher(node, txs, users, cashier, alwaysLeader{}, Config{
+		Confirmations:        6,
+		PollInterval:         time.Hour,
+		CashierRetryInterval: 200 * time.Millisecond,
+		ReorgCancelAge:       time.Millisecond,
+		NetworkParams:        testParams,
+	})
+
+	cancel, done := runWatcher(t, w)
+	defer cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	// Deposit seen and escrowed.
+	node.push(connectedEvent(100, addrScript(t, testAddr), testSatoshis))
+	waitFor(t, func() bool {
+		cashier.mu.Lock()
+		defer cashier.mu.Unlock()
+		return len(cashier.escrowedCalls) == 1
+	}, 2*time.Second)
+
+	// Block 100 is reorged out.
+	node.push(BlockEvent{Height: 100, Connected: false})
+
+	// Wait for watcher to process the disconnect: row should be soft-deleted
+	// (still in the map with reorgedAt set, absent from ListNotEscrowed).
+	waitFor(t, func() bool {
+		rows, _ := txs.ListNotEscrowed(context.Background())
+		txs.mu.Lock()
+		n := len(txs.deposits)
+		txs.mu.Unlock()
+		return len(rows) == 0 && n == 1
+	}, time.Second)
+
+	// Cashier ticker fires (within 200ms); ReorgCancelAge has elapsed → CancelDeposit.
+	waitFor(t, func() bool {
+		cashier.mu.Lock()
+		defer cashier.mu.Unlock()
+		return len(cashier.cancelCalls) == 1
+	}, 2*time.Second)
+
+	// Row is hard-deleted after cancel.
+	waitFor(t, func() bool {
+		txs.mu.Lock()
+		defer txs.mu.Unlock()
+		return len(txs.deposits) == 0
+	}, time.Second)
+
+	cashier.mu.Lock()
+	n := len(cashier.cancelCalls)
+	cashier.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("expected 1 CancelDeposit call, got %d", n)
+	}
+
+	cancel()
+	<-done
+}
+
 func TestNewUser_PickedUpByPoll(t *testing.T) {
 	node := newFakeSPVNode()
 	txs := newFakeTxStore2()
 	cashier := newFakeCashierClient()
 	users := newFakeUserStore()
 
-	w := NewWatcher(node, txs, users, cashier, Config{
+	w := NewWatcher(node, txs, users, cashier, alwaysLeader{}, Config{
 		Confirmations: 6,
 		PollInterval:  30 * time.Millisecond,
 		NetworkParams: testParams,

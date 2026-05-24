@@ -12,18 +12,18 @@ import (
 // RegistryService implements pb.RegistryServiceServer.
 type RegistryService struct {
 	pb.UnimplementedRegistryServiceServer
-	ref   *refStore
+	cache *RefCache
 	store InstrumentStore
 }
 
-func NewRegistryService(ref *refStore, store InstrumentStore) *RegistryService {
-	return &RegistryService{ref: ref, store: store}
+func NewRegistryService(cache *RefCache, store InstrumentStore) *RegistryService {
+	return &RegistryService{cache: cache, store: store}
 }
 
 // ── Reference data ────────────────────────────────────────────────────────────
 
 func (s *RegistryService) GetTeam(_ context.Context, req *pb.GetTeamRequest) (*pb.GetTeamResponse, error) {
-	t, ok := s.ref.getTeam(req.Id)
+	t, ok := s.cache.get().getTeam(req.Id)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "team %q not found", req.Id)
 	}
@@ -31,7 +31,7 @@ func (s *RegistryService) GetTeam(_ context.Context, req *pb.GetTeamRequest) (*p
 }
 
 func (s *RegistryService) GetGame(_ context.Context, req *pb.GetGameRequest) (*pb.GetGameResponse, error) {
-	g, ok := s.ref.getGame(req.Id)
+	g, ok := s.cache.get().getGame(req.Id)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "game %q not found", req.Id)
 	}
@@ -39,7 +39,7 @@ func (s *RegistryService) GetGame(_ context.Context, req *pb.GetGameRequest) (*p
 }
 
 func (s *RegistryService) GetPlayer(_ context.Context, req *pb.GetPlayerRequest) (*pb.GetPlayerResponse, error) {
-	p, ok := s.ref.getPlayer(req.Id)
+	p, ok := s.cache.get().getPlayer(req.Id)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "player %q not found", req.Id)
 	}
@@ -47,19 +47,19 @@ func (s *RegistryService) GetPlayer(_ context.Context, req *pb.GetPlayerRequest)
 }
 
 func (s *RegistryService) ListTeams(_ context.Context, req *pb.ListTeamsRequest) (*pb.ListTeamsResponse, error) {
-	return &pb.ListTeamsResponse{Teams: s.ref.listTeams(req.League)}, nil
+	return &pb.ListTeamsResponse{Teams: s.cache.get().listTeams(req.League)}, nil
 }
 
 func (s *RegistryService) ListGames(_ context.Context, req *pb.ListGamesRequest) (*pb.ListGamesResponse, error) {
-	return &pb.ListGamesResponse{Games: s.ref.listGames(req.League, req.FromUnix, req.ToUnix)}, nil
+	return &pb.ListGamesResponse{Games: s.cache.get().listGames(req.League, req.FromUnix, req.ToUnix)}, nil
 }
 
 func (s *RegistryService) ListPlayersByGame(_ context.Context, req *pb.ListPlayersByGameRequest) (*pb.ListPlayersByGameResponse, error) {
-	return &pb.ListPlayersByGameResponse{Players: s.ref.listPlayersByGame(req.GameId)}, nil
+	return &pb.ListPlayersByGameResponse{Players: s.cache.get().listPlayersByGame(req.GameId)}, nil
 }
 
 func (s *RegistryService) GetAllowedPropTypes(_ context.Context, req *pb.GetAllowedPropTypesRequest) (*pb.GetAllowedPropTypesResponse, error) {
-	return &pb.GetAllowedPropTypesResponse{PropTypes: s.ref.allowedPropTypes(req.League, req.Position)}, nil
+	return &pb.GetAllowedPropTypesResponse{PropTypes: s.cache.get().allowedPropTypes(req.League, req.Position)}, nil
 }
 
 // ── Instruments ───────────────────────────────────────────────────────────────
@@ -71,7 +71,8 @@ func (s *RegistryService) CreateInstrument(ctx context.Context, req *pb.CreateIn
 	if err := validateCrossLeg(req.Legs); err != nil {
 		return nil, err
 	}
-	gameExpiries, err := validateEntities(req.Legs, s.ref)
+	ref := s.cache.get()
+	gameExpiries, err := validateEntities(req.Legs, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func (s *RegistryService) CreateInstrument(ctx context.Context, req *pb.CreateIn
 	expiryUnix := MaxExpiry(req.Legs, gameExpiries)
 	expiry := time.Unix(expiryUnix, 0)
 
-	legs, err := collectLegs(req.Legs, s.ref)
+	legs, err := collectLegs(req.Legs, ref)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "collect legs: %v", err)
 	}

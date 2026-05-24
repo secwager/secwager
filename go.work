@@ -6,4 +6,5 @@ use ./market
 use ./matchengine
 use ./proto
 use ./registry
+use ./vendor_refdata
 use ./userregistration

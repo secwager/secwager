@@ -86,7 +86,8 @@ func testRS() *refStore {
 
 func newSvc() (*RegistryService, *fakeStore) {
 	store := newFakeStore()
-	return NewRegistryService(testRS(), store), store
+	cache := &RefCache{snapshot: testRS()}
+	return NewRegistryService(cache, store), store
 }
 
 func createReq(legs ...*pb.Leg) *pb.CreateInstrumentRequest {

@@ -1,2 +1,1 @@
-aws_profile        = "secwager-dev"
-single_nat_gateway = true
+aws_profile = "secwager-dev"

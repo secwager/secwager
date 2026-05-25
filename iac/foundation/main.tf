@@ -29,8 +29,7 @@ locals {
 module "vpc" {
   source = "../modules/vpc"
 
-  name               = local.name
-  single_nat_gateway = var.single_nat_gateway
+  name = local.name
 }
 
 module "cognito" {

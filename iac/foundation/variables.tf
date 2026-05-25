@@ -6,7 +6,3 @@ variable "region" {
 variable "aws_profile" {
   type = string
 }
-
-variable "single_nat_gateway" {
-  type = bool
-}

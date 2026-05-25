@@ -34,6 +34,35 @@ locals {
   env  = terraform.workspace
 }
 
+# NAT lives here so it's only billed when the ephemeral stack is running
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags   = { Name = "${local.name}-nat" }
+}
+
+resource "aws_nat_gateway" "this" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = local.f.public_subnet_ids[0]
+  tags          = { Name = local.name }
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = local.f.vpc_id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this.id
+  }
+
+  tags = { Name = "${local.name}-private" }
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(local.f.private_subnet_ids)
+  subnet_id      = local.f.private_subnet_ids[count.index]
+  route_table_id = aws_route_table.private.id
+}
+
 module "eks" {
   source = "../modules/eks"
 

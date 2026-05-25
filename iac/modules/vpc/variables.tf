@@ -21,9 +21,3 @@ variable "private_subnet_cidrs" {
   type    = list(string)
   default = ["10.0.10.0/24", "10.0.11.0/24"]
 }
-
-# true = single NAT (dev cost saving); false = one NAT per AZ (prod HA)
-variable "single_nat_gateway" {
-  type    = bool
-  default = true
-}

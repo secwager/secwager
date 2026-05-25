@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro,z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -52,16 +52,36 @@ services:
       USERREG_COGNITO_POOL_ID: "${USERREG_COGNITO_POOL_ID}"
       USERREG_KMS_KEY_ARN: "${USERREG_KMS_KEY_ARN}"
       USERREG_BTC_NETWORK: "${USERREG_BTC_NETWORK:-testnet}"
+      AWS_PROFILE: "${AWS_PROFILE:-default}"
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro,z
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "50052:50052"
 
+  vendor_refdata:
+    build:
+      context: .
+      dockerfile: vendor_refdata/Dockerfile
+    environment:
+      VENDOR_REFDATA_PG_DSN: "host=postgres dbname=registry user=postgres password=postgres sslmode=disable"
+      VENDOR_REFDATA_MIGRATIONS_PATH: "/db/migrations"
+      APISPORTS_KEY: "${APISPORTS_KEY}"
+      VENDOR_REFDATA_ROSTER_INTERVAL: "${VENDOR_REFDATA_ROSTER_INTERVAL:-24h}"
+      VENDOR_REFDATA_SCHEDULE_INTERVAL: "${VENDOR_REFDATA_SCHEDULE_INTERVAL:-24h}"
+      VENDOR_REFDATA_RESULTS_INTERVAL: "${VENDOR_REFDATA_RESULTS_INTERVAL:-1h}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   envoy:
     image: envoyproxy/envoy:v1.30-latest
+    environment:
+      ENVOY_UID: "0"  # SELinux blocks chown /dev/stdout even with CHOWN cap; run as root for local dev
     volumes:
-      - ./ui/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./ui/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro,z
     ports:
       - "8080:8080"
       - "9901:9901"

@@ -3,16 +3,17 @@ package userregistration;
 option go_package = "github.com/secwager/secwager/proto/gen/userregistration";
 
 service UserRegistrationService {
-  rpc RegisterUser (RegisterUserRequest)  returns (RegisterUserResponse);
-  rpc GetUser      (GetUserRequest)       returns (GetUserResponse);
+  rpc CompleteRegistration (CompleteRegistrationRequest)  returns (CompleteRegistrationResponse);
+  rpc GetUser              (GetUserRequest)               returns (GetUserResponse);
 }
 
-message RegisterUserRequest {
-  string username = 1;
-  string email    = 2;
+message CompleteRegistrationRequest {
+  string cognito_sub = 1;
+  string username    = 2;
+  string email       = 3;
 }
 
-message RegisterUserResponse {
+message CompleteRegistrationResponse {
   string user_id    = 1;
   string username   = 2;
   bytes  btc_pubkey = 3;

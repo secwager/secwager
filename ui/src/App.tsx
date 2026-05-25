@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { fetchAuthSession, getCurrentUser } from 'aws-amplify/auth'
+import { fetchAuthSession, fetchUserAttributes, getCurrentUser } from 'aws-amplify/auth'
 import { Hub } from 'aws-amplify/utils'
 import { useAuthStore } from './store/authStore'
-import { getUser } from './grpc/userregistration'
+import { completeRegistration, getUser } from './grpc/userregistration'
 import { Header } from './components/Header'
 import { AccountSummary } from './components/Dashboard/AccountSummary'
 import { InstrumentBuilder } from './components/InstrumentBuilder'
@@ -40,11 +40,18 @@ export default function App() {
       if (!jwt) return
       setAuth(jwt, user.userId, user.username)
 
-      // Fetch BTC address from userregistration service
-      const regResp = await getUser(user.username, jwt)
-      setBtcAddr(regResp.btcAddr)
-    } catch {
-      // Not signed in
+      try {
+        const regResp = await getUser(user.username, jwt)
+        setBtcAddr(regResp.btcAddr)
+      } catch (e) {
+        // DEV ONLY: Post Confirmation Lambda not available locally; complete registration from client.
+        if (import.meta.env.VITE_DEV_COMPLETE_REGISTRATION !== 'true') throw e
+        const attrs = await fetchUserAttributes()
+        const reg = await completeRegistration(user.userId, user.username, attrs.email ?? '', jwt)
+        setBtcAddr(reg.btcAddr)
+      }
+    } catch (e) {
+      console.error('bootstrapAuth failed:', e)
     }
   }
 

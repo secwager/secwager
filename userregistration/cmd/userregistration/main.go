@@ -11,7 +11,6 @@ import (
 	"syscall"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/golang-migrate/migrate/v4"
@@ -28,9 +27,8 @@ import (
 func main() {
 	pgDSN      := mustEnv("USERREG_PG_DSN")
 	listenAddr := envOr("USERREG_LISTEN_ADDR", "0.0.0.0:50052")
-	poolID     := mustEnv("USERREG_COGNITO_POOL_ID")
-	region     := envOr("USERREG_COGNITO_REGION", "us-east-1")
 	kmsKeyARN  := mustEnv("USERREG_KMS_KEY_ARN")
+	region     := envOr("USERREG_COGNITO_REGION", "us-east-1")
 	poolSize   := parseInt(envOr("USERREG_PG_POOL_SIZE", "10"))
 	btcNetwork := envOr("USERREG_BTC_NETWORK", "mainnet")
 
@@ -57,13 +55,9 @@ func main() {
 		log.Fatalf("load aws config: %v", err)
 	}
 
-	cognitoClient := cognitoidentityprovider.NewFromConfig(awsCfg)
-	kmsClient     := kms.NewFromConfig(awsCfg)
-
-	userMgr    := internal.NewCognitoUserManager(cognitoClient, poolID)
-	enc        := internal.NewKMSEncryptor(kmsClient, kmsKeyARN)
-	chainParams := btcNetworkParams(btcNetwork)
-	svc        := internal.NewUserRegistrationService(pool, userMgr, enc, kmsKeyARN, chainParams)
+	kmsClient := kms.NewFromConfig(awsCfg)
+	enc       := internal.NewKMSEncryptor(kmsClient, kmsKeyARN)
+	svc       := internal.NewUserRegistrationService(pool, enc, kmsKeyARN, btcNetworkParams(btcNetwork))
 
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {

@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import { Hub } from 'aws-amplify/utils'
 import { Authenticator } from '@aws-amplify/ui-react'
 import '@aws-amplify/ui-react/styles.css'
 
@@ -6,6 +8,9 @@ interface Props {
 }
 
 export function AuthModal({ onClose }: Props) {
+  useEffect(() => Hub.listen('auth', ({ payload }) => {
+    if (payload.event === 'signedIn') onClose()
+  }), [])
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -19,6 +24,7 @@ export function AuthModal({ onClose }: Props) {
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
         </div>
         <Authenticator />
+        <p className="text-center text-xs text-gray-400 mt-2">Click outside to close</p>
       </div>
     </div>
   )

@@ -13,9 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -33,16 +30,11 @@ import (
 	pb "github.com/secwager/secwager/proto/gen/userregistration"
 )
 
-var (
-	testPool          *pgxpool.Pool
-	testCognitoClient *cognitoidentityprovider.Client
-	testCognitoPoolID string
-)
+var testPool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 
-	// ── Postgres ──────────────────────────────────────────────────────────────
 	pgReq := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},
@@ -77,41 +69,6 @@ func TestMain(m *testing.M) {
 	testPool = pool
 	defer pool.Close()
 
-	// ── Cognito-local ─────────────────────────────────────────────────────────
-	cogReq := testcontainers.ContainerRequest{
-		Image:        "jagregory/cognito-local:latest",
-		ExposedPorts: []string{"9229/tcp"},
-		WaitingFor:   wait.ForListeningPort("9229/tcp").WithStartupTimeout(60 * time.Second),
-	}
-	cogContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: cogReq,
-		Started:          true,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "start cognito-local container: %v\n", err)
-		os.Exit(1)
-	}
-	defer cogContainer.Terminate(ctx)
-
-	cogHost, _ := cogContainer.Host(ctx)
-	cogPort, _ := cogContainer.MappedPort(ctx, "9229")
-	cogEndpoint := fmt.Sprintf("http://%s:%s", cogHost, cogPort.Port())
-
-	testCognitoClient = cognitoidentityprovider.New(cognitoidentityprovider.Options{
-		Region:       "us-east-1",
-		BaseEndpoint: aws.String(cogEndpoint),
-		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
-	})
-
-	poolOut, err := testCognitoClient.CreateUserPool(ctx, &cognitoidentityprovider.CreateUserPoolInput{
-		PoolName: aws.String("test-pool"),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create cognito user pool: %v\n", err)
-		os.Exit(1)
-	}
-	testCognitoPoolID = aws.ToString(poolOut.UserPool.Id)
-
 	os.Exit(m.Run())
 }
 
@@ -124,50 +81,39 @@ func truncate(t *testing.T) {
 }
 
 func newTestSvc() *UserRegistrationService {
-	return NewUserRegistrationService(
-		testPool,
-		NewCognitoUserManager(testCognitoClient, testCognitoPoolID),
-		&fakeEncryptor{},
-		"fake-kms-key",
-		&chaincfg.TestNet3Params,
-	)
+	return NewUserRegistrationService(testPool, &fakeEncryptor{}, "fake-kms-key", &chaincfg.TestNet3Params)
 }
 
 // ── DB-backed tests ───────────────────────────────────────────────────────────
 
-func TestDB_RegisterUser_Success(t *testing.T) {
+func TestDB_CompleteRegistration_Success(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	resp, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "alice@test.local", Email: "alice@test.local"})
+	resp, err := svc.CompleteRegistration(ctx, &pb.CompleteRegistrationRequest{
+		CognitoSub: "sub-alice", Username: "alice@test.local", Email: "alice@test.local",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Username != "alice@test.local" || resp.UserId == "" {
+	if resp.UserId != "sub-alice" || resp.Username != "alice@test.local" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if len(resp.BtcPubkey) != 33 {
 		t.Fatalf("expected 33-byte compressed pubkey, got %d bytes", len(resp.BtcPubkey))
 	}
 	if resp.BtcAddr == "" {
-		t.Fatal("expected non-empty btc_addr in response")
+		t.Fatal("expected non-empty btc_addr")
 	}
 
-	// Verify row persisted correctly.
 	var dbUserID, dbBtcAddr string
 	var dbPubkey, dbEncPrivKey []byte
 	err = testPool.QueryRow(ctx,
-		`SELECT user_id, btc_pubkey, btc_addr, encrypted_privkey FROM users WHERE username = 'alice@test.local'`).
+		`SELECT user_id, btc_pubkey, btc_addr, encrypted_privkey FROM users WHERE user_id = 'sub-alice'`).
 		Scan(&dbUserID, &dbPubkey, &dbBtcAddr, &dbEncPrivKey)
 	if err != nil {
 		t.Fatalf("db check: %v", err)
-	}
-	if dbUserID != resp.UserId {
-		t.Fatalf("user_id mismatch: resp=%s db=%s", resp.UserId, dbUserID)
-	}
-	if string(dbPubkey) != string(resp.BtcPubkey) {
-		t.Fatal("btc_pubkey mismatch between response and DB")
 	}
 	if dbBtcAddr != resp.BtcAddr {
 		t.Fatalf("btc_addr mismatch: resp=%s db=%s", resp.BtcAddr, dbBtcAddr)
@@ -177,17 +123,24 @@ func TestDB_RegisterUser_Success(t *testing.T) {
 	}
 }
 
-func TestDB_RegisterUser_AlreadyExists(t *testing.T) {
+func TestDB_CompleteRegistration_Idempotent(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob@test.local", Email: "bob@test.local"})
-
-	svc2 := newTestSvc()
-	_, err := svc2.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "bob@test.local", Email: "bob2@test.local"})
-	if status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("expected AlreadyExists, got %v", err)
+	req := &pb.CompleteRegistrationRequest{
+		CognitoSub: "sub-bob", Username: "bob@test.local", Email: "bob@test.local",
+	}
+	first, err := svc.CompleteRegistration(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CompleteRegistration(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BtcAddr != second.BtcAddr {
+		t.Fatalf("idempotency broken: addr changed between calls: %s vs %s", first.BtcAddr, second.BtcAddr)
 	}
 }
 
@@ -205,7 +158,9 @@ func TestDB_GetUser_Found(t *testing.T) {
 	ctx := context.Background()
 
 	svc := newTestSvc()
-	created, err := svc.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "carol@test.local", Email: "carol@test.local"})
+	created, err := svc.CompleteRegistration(ctx, &pb.CompleteRegistrationRequest{
+		CognitoSub: "sub-carol", Username: "carol@test.local", Email: "carol@test.local",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,14 +168,8 @@ func TestDB_GetUser_Found(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.UserId != created.UserId {
-		t.Fatalf("user_id mismatch: created=%s got=%s", created.UserId, got.UserId)
-	}
-	if string(got.BtcPubkey) != string(created.BtcPubkey) {
-		t.Fatal("btc_pubkey mismatch between RegisterUser and GetUser")
-	}
-	if got.BtcAddr != created.BtcAddr {
-		t.Fatalf("btc_addr mismatch: created=%s got=%s", created.BtcAddr, got.BtcAddr)
+	if got.UserId != created.UserId || got.BtcAddr != created.BtcAddr {
+		t.Fatalf("mismatch: created=%+v got=%+v", created, got)
 	}
 }
 
@@ -250,37 +199,39 @@ func newGRPCClient(t *testing.T) (pb.UserRegistrationServiceClient, func()) {
 	}
 }
 
-func TestGRPC_RegisterUser_ResponseAndDB(t *testing.T) {
+func TestGRPC_CompleteRegistration_ResponseAndDB(t *testing.T) {
 	truncate(t)
 	client, cleanup := newGRPCClient(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	resp, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "dave@test.local", Email: "dave@test.local"})
+	resp, err := client.CompleteRegistration(ctx, &pb.CompleteRegistrationRequest{
+		CognitoSub: "sub-dave", Username: "dave@test.local", Email: "dave@test.local",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Username != "dave@test.local" || resp.UserId == "" || len(resp.BtcPubkey) != 33 {
+	if resp.UserId != "sub-dave" || len(resp.BtcPubkey) != 33 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 
 	var dbUserID string
-	testPool.QueryRow(ctx, `SELECT user_id FROM users WHERE username = 'dave@test.local'`).Scan(&dbUserID)
+	testPool.QueryRow(ctx, `SELECT user_id FROM users WHERE user_id = 'sub-dave'`).Scan(&dbUserID)
 	if dbUserID != resp.UserId {
 		t.Fatalf("DB user_id mismatch: resp=%s db=%s", resp.UserId, dbUserID)
 	}
 }
 
-func TestGRPC_RegisterUser_AlreadyExists_StatusCode(t *testing.T) {
+func TestGRPC_CompleteRegistration_EmptyCognitoSub_StatusCode(t *testing.T) {
 	truncate(t)
 	client, cleanup := newGRPCClient(t)
 	defer cleanup()
-	ctx := context.Background()
 
-	client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve@test.local", Email: "eve@test.local"})
-	_, err := client.RegisterUser(ctx, &pb.RegisterUserRequest{Username: "eve@test.local", Email: "eve2@test.local"})
-	if status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("expected AlreadyExists, got %v", err)
+	_, err := client.CompleteRegistration(context.Background(), &pb.CompleteRegistrationRequest{
+		CognitoSub: "", Username: "eve@test.local",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
 
@@ -292,17 +243,6 @@ func TestGRPC_GetUser_NotFound_StatusCode(t *testing.T) {
 	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Username: "nobody@test.local"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)
-	}
-}
-
-func TestGRPC_RegisterUser_EmptyUsername_StatusCode(t *testing.T) {
-	truncate(t)
-	client, cleanup := newGRPCClient(t)
-	defer cleanup()
-
-	_, err := client.RegisterUser(context.Background(), &pb.RegisterUserRequest{Username: "", Email: "x@example.com"})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
 

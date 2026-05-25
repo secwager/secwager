@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -18,64 +17,42 @@ import (
 	pb "github.com/secwager/secwager/proto/gen/userregistration"
 )
 
-// AlreadyExistsError is returned when the username is already registered.
-type AlreadyExistsError struct{ Msg string }
-
-// NotFoundError is returned when the requested user does not exist.
-type NotFoundError struct{ Msg string }
-
-func (e *AlreadyExistsError) Error() string { return e.Msg }
-func (e *NotFoundError) Error() string      { return e.Msg }
-
-// UserRegistrationService implements pb.UserRegistrationServiceServer.
 type UserRegistrationService struct {
 	pb.UnimplementedUserRegistrationServiceServer
-	pool         *pgxpool.Pool
-	users        UserManager
-	encryptor    KeyEncryptor
-	kmsKeyID     string
-	chainParams  *chaincfg.Params
+	pool        *pgxpool.Pool
+	encryptor   KeyEncryptor
+	kmsKeyID    string
+	chainParams *chaincfg.Params
 }
 
-func NewUserRegistrationService(pool *pgxpool.Pool, users UserManager, enc KeyEncryptor, kmsKeyID string, chainParams *chaincfg.Params) *UserRegistrationService {
-	return &UserRegistrationService{pool: pool, users: users, encryptor: enc, kmsKeyID: kmsKeyID, chainParams: chainParams}
+func NewUserRegistrationService(pool *pgxpool.Pool, enc KeyEncryptor, kmsKeyID string, chainParams *chaincfg.Params) *UserRegistrationService {
+	return &UserRegistrationService{pool: pool, encryptor: enc, kmsKeyID: kmsKeyID, chainParams: chainParams}
 }
 
-func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.RegisterUserRequest) (*pb.RegisterUserResponse, error) {
+func (s *UserRegistrationService) CompleteRegistration(ctx context.Context, req *pb.CompleteRegistrationRequest) (*pb.CompleteRegistrationResponse, error) {
+	if req.CognitoSub == "" {
+		return nil, status.Error(codes.InvalidArgument, "cognito_sub is required")
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if req.Email == "" {
-		return nil, status.Error(codes.InvalidArgument, "email is required")
-	}
 
-	// Best-effort early collision check before touching Cognito.
-	var existing string
-	err := s.pool.QueryRow(ctx, `SELECT user_id FROM users WHERE username = $1`, req.Username).Scan(&existing)
+	// Idempotency: return existing data if already registered (handles Lambda retries).
+	var existingPubkey []byte
+	var existingBtcAddr string
+	err := s.pool.QueryRow(ctx,
+		`SELECT btc_pubkey, btc_addr FROM users WHERE user_id = $1`, req.CognitoSub).
+		Scan(&existingPubkey, &existingBtcAddr)
 	if err == nil {
-		return nil, status.Error(codes.AlreadyExists, "username already registered: "+req.Username)
+		return &pb.CompleteRegistrationResponse{
+			UserId: req.CognitoSub, Username: req.Username,
+			BtcPubkey: existingPubkey, BtcAddr: existingBtcAddr,
+		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("pre-check username: %v", err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("idempotency check: %v", err))
 	}
 
-	// Saga step 1: create Cognito user.
-	cognitoSub, err := s.users.CreateUser(ctx, req.Username, req.Email)
-	if err != nil {
-		return nil, toGRPCError(err)
-	}
-
-	// Compensating rollback: delete the Cognito user if anything below fails.
-	rollback := true
-	defer func() {
-		if rollback {
-			if delErr := s.users.DeleteUser(context.Background(), req.Username); delErr != nil {
-				log.Printf("compensating rollback failed for username %s (cognito sub %s): %v", req.Username, cognitoSub, delErr)
-			}
-		}
-	}()
-
-	// Saga step 2: generate secp256k1 keypair.
 	privKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("generate keypair: %v", err))
@@ -83,7 +60,6 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 	pubKeyBytes := privKey.PubKey().SerializeCompressed()
 	privKeyBytes := privKey.Serialize()
 
-	// Derive P2WPKH bech32 address from the public key.
 	addrHash := btcutil.Hash160(pubKeyBytes)
 	btcAddr, err := btcutil.NewAddressWitnessPubKeyHash(addrHash, s.chainParams)
 	if err != nil {
@@ -91,7 +67,6 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 	}
 	btcAddrStr := btcAddr.EncodeAddress()
 
-	// Encrypt private key; zero the plaintext immediately after.
 	encPrivKey, err := s.encryptor.Encrypt(ctx, privKeyBytes)
 	for i := range privKeyBytes {
 		privKeyBytes[i] = 0
@@ -100,25 +75,24 @@ func (s *UserRegistrationService) RegisterUser(ctx context.Context, req *pb.Regi
 		return nil, status.Error(codes.Internal, fmt.Sprintf("encrypt private key: %v", err))
 	}
 
-	// Saga step 3: persist to Postgres.
 	_, err = s.pool.Exec(ctx,
 		`INSERT INTO users (user_id, username, btc_pubkey, btc_addr, encrypted_privkey, kms_key_id)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		cognitoSub, req.Username, pubKeyBytes, btcAddrStr, encPrivKey, s.kmsKeyID)
+		req.CognitoSub, req.Username, pubKeyBytes, btcAddrStr, encPrivKey, s.kmsKeyID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, status.Error(codes.AlreadyExists, "username already registered: "+req.Username)
+			// Concurrent insert race; idempotent — caller gets partial response.
+			return &pb.CompleteRegistrationResponse{
+				UserId: req.CognitoSub, Username: req.Username, BtcAddr: btcAddrStr,
+			}, nil
 		}
-		return nil, status.Error(codes.Internal, fmt.Sprintf("insert user (cognito sub %s): %v", cognitoSub, err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("insert user: %v", err))
 	}
 
-	rollback = false
-	return &pb.RegisterUserResponse{
-		UserId:    cognitoSub,
-		Username:  req.Username,
-		BtcPubkey: pubKeyBytes,
-		BtcAddr:   btcAddrStr,
+	return &pb.CompleteRegistrationResponse{
+		UserId: req.CognitoSub, Username: req.Username,
+		BtcPubkey: pubKeyBytes, BtcAddr: btcAddrStr,
 	}, nil
 }
 
@@ -138,17 +112,4 @@ func (s *UserRegistrationService) GetUser(ctx context.Context, req *pb.GetUserRe
 		return nil, status.Error(codes.Internal, fmt.Sprintf("get user: %v", err))
 	}
 	return &pb.GetUserResponse{UserId: userID, Username: username, BtcPubkey: pubkey, BtcAddr: btcAddr}, nil
-}
-
-func toGRPCError(err error) error {
-	var aee *AlreadyExistsError
-	var nfe *NotFoundError
-	switch {
-	case errors.As(err, &aee):
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.As(err, &nfe):
-		return status.Error(codes.NotFound, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
-	}
 }

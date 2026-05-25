@@ -114,14 +114,29 @@ func (s *Store) UpsertPlayer(ctx context.Context, p PlayerRecord) error {
 }
 
 func (s *Store) UpsertGame(ctx context.Context, g GameRecord) error {
+	// Step 1: if this external game was rescheduled (same gamePk, different date → different
+	// internal id), update the existing row's id so the second step doesn't hit the
+	// external_vendor+external_id unique constraint.
 	_, err := s.pool.Exec(ctx, `
+		UPDATE games
+		SET id = $1, scheduled_unix = $2, expiry_unix = $3, updated_at = now()
+		WHERE external_vendor = $4 AND external_id = $5 AND id != $1`,
+		g.ID, g.ScheduledUnix, g.ExpiryUnix, g.ExternalVendor, g.ExternalID)
+	if err != nil {
+		return fmt.Errorf("rescheduled-game update: %w", err)
+	}
+
+	// Step 2: insert or update by internal id.
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO games (id, league_id, season_year, home_team_id, away_team_id,
 		                   scheduled_unix, expiry_unix, status, external_id, external_vendor, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
-		ON CONFLICT (external_vendor, external_id) DO UPDATE SET
-			scheduled_unix = EXCLUDED.scheduled_unix,
-			expiry_unix    = EXCLUDED.expiry_unix,
-			updated_at     = now()`,
+		ON CONFLICT (id) DO UPDATE SET
+			scheduled_unix  = EXCLUDED.scheduled_unix,
+			expiry_unix     = EXCLUDED.expiry_unix,
+			external_id     = EXCLUDED.external_id,
+			external_vendor = EXCLUDED.external_vendor,
+			updated_at      = now()`,
 		g.ID, g.LeagueID, g.SeasonYear, g.HomeTeamID, g.AwayTeamID,
 		g.ScheduledUnix, g.ExpiryUnix, g.Status, g.ExternalID, g.ExternalVendor)
 	return err

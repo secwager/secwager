@@ -5,7 +5,7 @@ const LEAGUES: { league: League; label: string; abbr: string }[] = [
   { league: League.MLB,     label: 'MLB',     abbr: 'MLB' },
   { league: League.NFL,     label: 'NFL',     abbr: 'NFL' },
   { league: League.EPL,     label: 'Premier League', abbr: 'EPL' },
-  { league: League.LA_LIGA, label: 'La Liga', abbr: 'LAL' },
+  { league: League.LA_LIGA, label: 'La Liga', abbr: 'La Liga' },
   { league: League.MLS,     label: 'MLS',     abbr: 'MLS' },
 ]
 

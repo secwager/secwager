@@ -1,9 +1,19 @@
+import { useState } from 'react'
+
 interface Props {
   btcAddr: string
   onClose(): void
 }
 
 export function DepositModal({ btcAddr, onClose }: Props) {
+  const [copied, setCopied] = useState(false)
+
+  function handleCopy() {
+    navigator.clipboard.writeText(btcAddr)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -24,11 +34,12 @@ export function DepositModal({ btcAddr, onClose }: Props) {
           {btcAddr}
         </div>
         <button
-          onClick={() => navigator.clipboard.writeText(btcAddr)}
+          onClick={handleCopy}
           className="w-full rounded border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 transition-colors"
         >
-          Copy address
+          {copied ? 'Copied!' : 'Copy address'}
         </button>
+        <p className="text-center text-xs text-gray-400">Click outside to close</p>
       </div>
     </div>
   )

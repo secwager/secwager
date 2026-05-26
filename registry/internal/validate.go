@@ -101,11 +101,19 @@ func validateCrossLeg(legs []*pb.Leg) error {
 	return nil
 }
 
+func isLowerBound(c pb.Comparator) bool {
+	return c == pb.Comparator_GT || c == pb.Comparator_GTE
+}
+
+func isUpperBound(c pb.Comparator) bool {
+	return c == pb.Comparator_LT || c == pb.Comparator_LTE
+}
+
 func checkPropContradiction(pps []*pb.PlayerProp) error {
 	for i := 0; i < len(pps); i++ {
 		for j := i + 1; j < len(pps); j++ {
 			a, b := pps[i], pps[j]
-			// GT a + LTE a or GTE a + LT a → impossible
+			// GT a + LTE a or GTE a + LT a → impossible range
 			if (a.Comparator == pb.Comparator_GT && b.Comparator == pb.Comparator_LTE && a.Threshold == b.Threshold) ||
 				(a.Comparator == pb.Comparator_LTE && b.Comparator == pb.Comparator_GT && a.Threshold == b.Threshold) ||
 				(a.Comparator == pb.Comparator_GTE && b.Comparator == pb.Comparator_LT && a.Threshold == b.Threshold) ||
@@ -117,6 +125,15 @@ func checkPropContradiction(pps []*pb.PlayerProp) error {
 			if a.Comparator == pb.Comparator_EQ && b.Comparator == pb.Comparator_EQ && a.Threshold != b.Threshold {
 				return status.Errorf(codes.InvalidArgument, "contradicting prop legs: EQ %d and EQ %d",
 					a.Threshold, b.Threshold)
+			}
+			// Two lower bounds or two upper bounds are degenerate — only the more restrictive is needed
+			if isLowerBound(a.Comparator) && isLowerBound(b.Comparator) {
+				return status.Errorf(codes.InvalidArgument, "degenerate prop legs: %v %d and %v %d are both lower bounds",
+					a.Comparator, a.Threshold, b.Comparator, b.Threshold)
+			}
+			if isUpperBound(a.Comparator) && isUpperBound(b.Comparator) {
+				return status.Errorf(codes.InvalidArgument, "degenerate prop legs: %v %d and %v %d are both upper bounds",
+					a.Comparator, a.Threshold, b.Comparator, b.Threshold)
 			}
 		}
 	}

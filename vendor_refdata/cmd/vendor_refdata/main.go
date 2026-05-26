@@ -21,9 +21,10 @@ import (
 func main() {
 	dsn := mustEnv("VENDOR_REFDATA_PG_DSN")
 	apiKey := mustEnv("APISPORTS_KEY")
-	rosterInterval := optDuration(envOr("VENDOR_REFDATA_ROSTER_INTERVAL", "1h"), time.Hour)
-	scheduleInterval := optDuration(envOr("VENDOR_REFDATA_SCHEDULE_INTERVAL", "1h"), time.Hour)
-	resultsInterval := optDuration(envOr("VENDOR_REFDATA_RESULTS_INTERVAL", "5m"), 5*time.Minute)
+	rosterInterval := optDuration(envOr("VENDOR_REFDATA_ROSTER_INTERVAL", "24h"), 24*time.Hour)
+	scheduleInterval := optDuration(envOr("VENDOR_REFDATA_SCHEDULE_INTERVAL", "24h"), 24*time.Hour)
+	lineupInterval := optDuration(envOr("VENDOR_REFDATA_LINEUP_INTERVAL", "15m"), 15*time.Minute)
+	lineupWindow := optDuration(envOr("VENDOR_REFDATA_LINEUP_WINDOW", "6h"), 6*time.Hour)
 	migrationsPath := envOr("VENDOR_REFDATA_MIGRATIONS_PATH", "../../registry/db/migrations")
 
 	year := time.Now().Year()
@@ -50,12 +51,13 @@ func main() {
 	mlbClient := internal.NewMLBClient()
 	apClient := internal.NewAPISportsClient(apiKey)
 
-	populator := internal.NewPopulator(mlbClient, apClient, store, year)
-	eventFetcher := internal.NewEventFetcher(mlbClient, apClient, store)
+	rosterPop := internal.NewRosterPopulator(mlbClient, apClient, store, year)
+	schedulePop := internal.NewSchedulePopulator(mlbClient, apClient, store, year)
+	lineupPop := internal.NewLineupPopulator(mlbClient, apClient, store, lineupWindow)
 
-	// Roster + schedule share the same interval; run as a single ticker.
-	go populator.Run(ctx, min(rosterInterval, scheduleInterval))
-	go eventFetcher.Run(ctx, resultsInterval)
+	go rosterPop.Run(ctx, rosterInterval)
+	go schedulePop.Run(ctx, scheduleInterval)
+	go lineupPop.Run(ctx, lineupInterval)
 
 	<-ctx.Done()
 	log.Printf("vendor_refdata: shutting down")
@@ -104,9 +106,3 @@ func optDuration(s string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}

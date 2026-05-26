@@ -36,11 +36,7 @@ describe('rejectReason — no conflict', () => {
     expect(rejectReason([prop()], prop({ propType: PropType.HITS }))).toBeNull()
   })
 
-  it('returns null for same player+prop, different comparator', () => {
-    expect(rejectReason([prop()], prop({ comparator: Comparator.GTE }))).toBeNull()
-  })
-
-  it('returns null for same player+prop+comparator, different threshold', () => {
+  it('returns null for same player+prop+comparator, different threshold (candidate stricter)', () => {
     expect(rejectReason([prop()], prop({ threshold: 2 }))).toBeNull()
   })
 
@@ -60,6 +56,64 @@ describe('rejectReason — duplicate', () => {
 
   it('rejects even when other non-duplicate legs are present', () => {
     expect(rejectReason([outcomeDraw(), prop()], prop())).toBe('duplicate')
+  })
+})
+
+describe('rejectReason — degenerate-prop', () => {
+  it('rejects a weaker lower bound (GT 3 when GT 5 exists)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 5 })],
+      prop({ comparator: Comparator.GT, threshold: 3 }),
+    )).toBe('degenerate-prop')
+  })
+
+  it('allows a stricter lower bound (GT 5 when GT 3 exists)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 3 })],
+      prop({ comparator: Comparator.GT, threshold: 5 }),
+    )).toBeNull()
+  })
+
+  it('rejects a weaker upper bound (LT 5 when LT 2 exists)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.LT, threshold: 2 })],
+      prop({ comparator: Comparator.LT, threshold: 5 }),
+    )).toBe('degenerate-prop')
+  })
+
+  it('allows a stricter upper bound (LT 2 when LT 5 exists)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.LT, threshold: 5 })],
+      prop({ comparator: Comparator.LT, threshold: 2 }),
+    )).toBeNull()
+  })
+
+  it('rejects GTE 1 when GT 1 exists (same effective lower bound)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 1 })],
+      prop({ comparator: Comparator.GTE, threshold: 1 }),
+    )).toBe('degenerate-prop')
+  })
+
+  it('does not apply to different players', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 5 })],
+      prop({ comparator: Comparator.GT, threshold: 3, playerId: 'MLB::OAK::OTHER' }),
+    )).toBeNull()
+  })
+
+  it('does not apply to different prop types', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 5 })],
+      prop({ comparator: Comparator.GT, threshold: 3, propType: PropType.HITS }),
+    )).toBeNull()
+  })
+
+  it('allows a lower bound alongside an upper bound (valid range)', () => {
+    expect(rejectReason(
+      [prop({ comparator: Comparator.GT, threshold: 1 })],
+      prop({ comparator: Comparator.LT, threshold: 5 }),
+    )).toBeNull()
   })
 })
 

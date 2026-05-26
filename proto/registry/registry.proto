@@ -89,10 +89,11 @@ message Team {
 }
 
 message Player {
-  string            id        = 1;
-  string            name      = 2;
-  string            team_id   = 3;
-  repeated Position positions = 4;
+  string            id               = 1;
+  string            name             = 2;
+  string            team_id          = 3;
+  repeated Position positions        = 4;
+  bool              lineup_confirmed = 5;
 }
 
 message Game {

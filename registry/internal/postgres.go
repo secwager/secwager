@@ -23,7 +23,7 @@ func newPGStore(pool *pgxpool.Pool) *pgStore {
 	return &pgStore{pool: pool}
 }
 
-func (s *pgStore) Create(ctx context.Context, id string, expiry time.Time, legs []LegRow) (bool, error) {
+func (s *pgStore) Create(ctx context.Context, id string, creatorID string, expiry time.Time, legs []LegRow) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin tx: %w", err)
@@ -39,9 +39,13 @@ func (s *pgStore) Create(ctx context.Context, id string, expiry time.Time, legs 
 		return false, fmt.Errorf("check existing: %w", err)
 	}
 
+	var creatorVal interface{}
+	if creatorID != "" {
+		creatorVal = creatorID
+	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO instruments (id, expiry) VALUES ($1, $2)`,
-		id, expiry,
+		`INSERT INTO instruments (id, creator_id, expiry) VALUES ($1, $2, $3)`,
+		id, creatorVal, expiry,
 	); err != nil {
 		return false, fmt.Errorf("insert instrument: %w", err)
 	}
@@ -167,7 +171,7 @@ func (s *pgStore) List(ctx context.Context, req ListFilter) ([]InstrumentRecord,
 		FROM instruments i
 		JOIN instrument_legs l ON l.instrument_id = i.id
 		JOIN instrument_leg_entities e ON e.leg_id = l.id
-		WHERE ($1 = '' OR e.entity_id = $1)
+		WHERE ($1 = '' OR e.entity_id = $1 OR i.creator_id = $1)
 		  AND ($2 = 0  OR l.league = $2)
 		  AND (NOT $3  OR i.expiry > NOW())
 		  AND ($4::timestamptz IS NULL OR (i.created_at, i.id) < ($4::timestamptz, $5))

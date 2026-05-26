@@ -81,10 +81,14 @@ export function LegBuilder() {
   function handleAdd() {
     if (!candidateLeg || rejection) return
     addLeg(candidateLeg)
-    setPlayerId('')
-    setPlayerPosition(null)
-    setPropType(PropType.PROP_UNSPECIFIED)
-    setThreshold('')
+    if (legType === 'outcome') {
+      setLegType('prop')
+    } else {
+      setPlayerId('')
+      setPlayerPosition(null)
+      setPropType(PropType.PROP_UNSPECIFIED)
+      setThreshold('')
+    }
   }
 
   if (!selectedGameId) {
@@ -135,7 +139,9 @@ export function LegBuilder() {
           >
             <option value="">Select player…</option>
             {players.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+              <option key={p.id} value={p.id}>
+                {p.lineupConfirmed ? `★ ${p.name}` : p.name}
+              </option>
             ))}
           </select>
 
@@ -180,7 +186,9 @@ export function LegBuilder() {
         <p className="text-xs text-amber-600">
           {rejection === 'duplicate'
             ? 'This leg is already in the parlay.'
-            : 'A game outcome leg for this game is already added.'}
+            : rejection === 'game-outcome-conflict'
+            ? 'A game outcome leg for this game is already added.'
+            : 'A more restrictive version of this leg is already in the parlay.'}
         </p>
       )}
       <button

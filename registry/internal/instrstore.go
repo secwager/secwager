@@ -39,7 +39,7 @@ type ListFilter struct {
 
 // InstrumentStore is the persistence interface for instruments.
 type InstrumentStore interface {
-	Create(ctx context.Context, id string, expiry time.Time, legs []LegRow) (alreadyExisted bool, err error)
+	Create(ctx context.Context, id string, creatorID string, expiry time.Time, legs []LegRow) (alreadyExisted bool, err error)
 	Get(ctx context.Context, id string) (InstrumentRecord, error)
 	List(ctx context.Context, req ListFilter) (records []InstrumentRecord, nextPageToken string, err error)
 }

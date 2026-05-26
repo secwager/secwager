@@ -62,9 +62,8 @@ type mlbScheduleResp struct {
 	} `json:"dates"`
 }
 
-// FetchMLBRefData fetches teams, rosters, and schedule for the given season year,
-// upserting everything into the store.
-func FetchMLBRefData(ctx context.Context, client *MLBClient, store *Store, year int) error {
+// FetchMLBRosters fetches MLB teams and per-team rosters for the given season year.
+func FetchMLBRosters(ctx context.Context, client *MLBClient, store *Store, year int) error {
 	if err := store.UpsertSeason(ctx, int(pb.League_MLB), year); err != nil {
 		return fmt.Errorf("upsert MLB season: %w", err)
 	}
@@ -73,11 +72,7 @@ func FetchMLBRefData(ctx context.Context, client *MLBClient, store *Store, year 
 	if err := client.get(ctx, fmt.Sprintf("/teams?sportId=1&season=%d", year), &teamsResp); err != nil {
 		return fmt.Errorf("fetch MLB teams: %w", err)
 	}
-
-	// Map numeric team ID → abbreviation for schedule processing.
-	teamAbbr := make(map[int]string, len(teamsResp.Teams))
 	for _, t := range teamsResp.Teams {
-		teamAbbr[t.ID] = t.Abbreviation
 		rec := TeamRecord{
 			ID:             makeTeamID(pb.League_MLB, t.Abbreviation),
 			Name:           t.Name,
@@ -90,23 +85,29 @@ func FetchMLBRefData(ctx context.Context, client *MLBClient, store *Store, year 
 			log.Printf("upsert MLB team %s: %v", t.Abbreviation, err)
 		}
 	}
-
-	// Fetch rosters for every team.
 	for _, t := range teamsResp.Teams {
 		if err := fetchMLBRoster(ctx, client, store, t.ID, t.Abbreviation, year); err != nil {
 			log.Printf("fetch MLB roster for %s: %v", t.Abbreviation, err)
 		}
 	}
+	return nil
+}
 
-	// Fetch schedule.
+// FetchMLBSchedule fetches the MLB regular-season schedule, resolving team codes from the DB.
+func FetchMLBSchedule(ctx context.Context, client *MLBClient, store *Store, year int) error {
+	teamCodes, err := store.LookupTeamCodesByLeague(ctx, int32(pb.League_MLB), mlbVendor)
+	if err != nil {
+		return fmt.Errorf("lookup MLB team codes: %w", err)
+	}
+
 	var schedResp mlbScheduleResp
 	if err := client.get(ctx, fmt.Sprintf("/schedule?sportId=1&season=%d&gameType=R", year), &schedResp); err != nil {
 		return fmt.Errorf("fetch MLB schedule: %w", err)
 	}
 	for _, d := range schedResp.Dates {
 		for _, g := range d.Games {
-			homeAbbr := teamAbbr[g.Teams.Home.Team.ID]
-			awayAbbr := teamAbbr[g.Teams.Away.Team.ID]
+			homeAbbr := teamCodes[strconv.Itoa(g.Teams.Home.Team.ID)]
+			awayAbbr := teamCodes[strconv.Itoa(g.Teams.Away.Team.ID)]
 			if homeAbbr == "" || awayAbbr == "" {
 				continue
 			}
@@ -159,6 +160,60 @@ func fetchMLBRoster(ctx context.Context, client *MLBClient, store *Store, teamNu
 		}
 	}
 	return nil
+}
+
+// FetchMLBRefData fetches rosters and schedule for the given season. Kept for test compatibility.
+func FetchMLBRefData(ctx context.Context, client *MLBClient, store *Store, year int) error {
+	if err := FetchMLBRosters(ctx, client, store, year); err != nil {
+		return err
+	}
+	return FetchMLBSchedule(ctx, client, store, year)
+}
+
+// mlbLiveResp is the response from /api/v1.1/game/{gamePk}/feed/live.
+// We only decode the fields needed to derive the starting lineup.
+type mlbLiveResp struct {
+	LiveData struct {
+		Boxscore struct {
+			Teams struct {
+				Home struct {
+					Batters []int `json:"batters"`
+				} `json:"home"`
+				Away struct {
+					Batters []int `json:"batters"`
+				} `json:"away"`
+			} `json:"teams"`
+		} `json:"boxscore"`
+	} `json:"liveData"`
+}
+
+// FetchMLBLineup fetches confirmed batters from the MLB live feed and stores them as lineup entries.
+// Returns (false, nil) if the batters array is empty (lineup not yet posted).
+func FetchMLBLineup(ctx context.Context, client *MLBClient, store *Store, game GameRecord) (bool, error) {
+	var resp mlbLiveResp
+	if err := client.getV11(ctx, fmt.Sprintf("/game/%s/feed/live", game.ExternalID), &resp); err != nil {
+		return false, fmt.Errorf("fetch MLB live feed game=%s: %w", game.ExternalID, err)
+	}
+	home := resp.LiveData.Boxscore.Teams.Home.Batters
+	away := resp.LiveData.Boxscore.Teams.Away.Batters
+	if len(home) == 0 && len(away) == 0 {
+		return false, nil
+	}
+
+	var confirmedIDs []string
+	for _, playerNumID := range append(home, away...) {
+		p, ok, err := store.LookupPlayerByExternal(ctx, mlbVendor, strconv.Itoa(playerNumID))
+		if err != nil {
+			return false, fmt.Errorf("lookup MLB player %d: %w", playerNumID, err)
+		}
+		if ok {
+			confirmedIDs = append(confirmedIDs, p.ID)
+		}
+	}
+	if err := store.ReplaceGameLineup(ctx, game.ID, confirmedIDs); err != nil {
+		return false, fmt.Errorf("replace lineup game=%s: %w", game.ID, err)
+	}
+	return true, nil
 }
 
 // parseISO8601Unix parses an ISO 8601 UTC timestamp (e.g. "2024-04-01T17:05:00Z") to Unix.

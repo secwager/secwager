@@ -14,11 +14,12 @@ type ruleKey struct {
 }
 
 type refStore struct {
-	teams      map[string]*pb.Team
-	players    map[string]*pb.Player
-	games      map[string]*pb.Game
-	gameRoster map[string][]string    // game_id → []player_id
-	propRules  map[ruleKey][]pb.PropType
+	teams            map[string]*pb.Team
+	players          map[string]*pb.Player
+	games            map[string]*pb.Game
+	gameRoster       map[string][]string         // game_id → []player_id
+	confirmedLineups map[string]map[string]bool  // game_id → set of player_ids
+	propRules        map[ruleKey][]pb.PropType
 }
 
 type fixtureFile struct {
@@ -60,11 +61,12 @@ func loadFixture(path string) (*refStore, error) {
 	}
 
 	rs := &refStore{
-		teams:      make(map[string]*pb.Team),
-		players:    make(map[string]*pb.Player),
-		games:      make(map[string]*pb.Game),
-		gameRoster: make(map[string][]string),
-		propRules:  make(map[ruleKey][]pb.PropType),
+		teams:            make(map[string]*pb.Team),
+		players:          make(map[string]*pb.Player),
+		games:            make(map[string]*pb.Game),
+		gameRoster:       make(map[string][]string),
+		confirmedLineups: make(map[string]map[string]bool),
+		propRules:        make(map[ruleKey][]pb.PropType),
 	}
 
 	for _, t := range f.Teams {
@@ -175,10 +177,17 @@ func (rs *refStore) listGames(league pb.League, fromUnix, toUnix int64) []*pb.Ga
 
 func (rs *refStore) listPlayersByGame(gameID string) []*pb.Player {
 	ids := rs.gameRoster[gameID]
+	confirmed := rs.confirmedLineups[gameID]
 	out := make([]*pb.Player, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := rs.players[id]; ok {
-			out = append(out, p)
+			if confirmed[id] {
+				clone := *p
+				clone.LineupConfirmed = true
+				out = append(out, &clone)
+			} else {
+				out = append(out, p)
+			}
 		}
 	}
 	return out

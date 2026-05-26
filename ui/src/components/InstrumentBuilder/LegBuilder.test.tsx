@@ -15,8 +15,8 @@ const mockUsePlayers = vi.mocked(usePlayers)
 const mockUsePropTypes = vi.mocked(usePropTypes)
 
 const PLAYERS = [
-  { id: 'MLB::OAK::ROOKER', name: 'Brent Rooker', teamId: 'MLB::OAK', positions: [Position.MLB_BATTER] },
-  { id: 'MLB::OAK::BLACKBURN', name: 'Paul Blackburn', teamId: 'MLB::OAK', positions: [Position.MLB_PITCHER] },
+  { id: 'MLB::OAK::ROOKER', name: 'Brent Rooker', teamId: 'MLB::OAK', positions: [Position.MLB_BATTER], lineupConfirmed: false },
+  { id: 'MLB::OAK::BLACKBURN', name: 'Paul Blackburn', teamId: 'MLB::OAK', positions: [Position.MLB_PITCHER], lineupConfirmed: false },
 ]
 
 beforeEach(() => {
@@ -37,7 +37,7 @@ describe('LegBuilder — outcome mode', () => {
   beforeEach(() => {
     useBuilderStore.setState({ selectedLeague: League.MLB, selectedGameId: 'g1', legs: [] })
     mockUsePlayers.mockReturnValue({ data: { players: PLAYERS }, isLoading: false } as ReturnType<typeof usePlayers>)
-    mockUsePropTypes.mockReturnValue({ data: { propTypes: [] } } as ReturnType<typeof usePropTypes>)
+    mockUsePropTypes.mockReturnValue({ data: { propTypes: [] } } as unknown as ReturnType<typeof usePropTypes>)
   })
 
   it('shows outcome select by default', () => {

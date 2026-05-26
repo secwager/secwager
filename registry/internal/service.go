@@ -2,12 +2,45 @@ package internal
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
 	"time"
 
 	pb "github.com/secwager/secwager/proto/gen/registry"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+// subFromContext extracts the Cognito sub claim from the Bearer JWT in gRPC metadata.
+// Returns "" if the token is absent or cannot be parsed.
+func subFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	vals := md.Get("authorization")
+	if len(vals) == 0 {
+		return ""
+	}
+	token := strings.TrimPrefix(vals[0], "Bearer ")
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Sub
+}
 
 // RegistryService implements pb.RegistryServiceServer.
 type RegistryService struct {
@@ -89,7 +122,7 @@ func (s *RegistryService) CreateInstrument(ctx context.Context, req *pb.CreateIn
 		return nil, status.Errorf(codes.Internal, "collect legs: %v", err)
 	}
 
-	alreadyExisted, err := s.store.Create(ctx, id, expiry, legs)
+	alreadyExisted, err := s.store.Create(ctx, id, subFromContext(ctx), expiry, legs)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store create: %v", err)
 	}

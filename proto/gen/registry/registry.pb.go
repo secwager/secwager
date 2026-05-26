@@ -422,13 +422,14 @@ func (x *Team) GetLeague() League {
 }
 
 type Player struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	TeamId        string                 `protobuf:"bytes,3,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
-	Positions     []Position             `protobuf:"varint,4,rep,packed,name=positions,proto3,enum=registry.Position" json:"positions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name            string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	TeamId          string                 `protobuf:"bytes,3,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
+	Positions       []Position             `protobuf:"varint,4,rep,packed,name=positions,proto3,enum=registry.Position" json:"positions,omitempty"`
+	LineupConfirmed bool                   `protobuf:"varint,5,opt,name=lineup_confirmed,json=lineupConfirmed,proto3" json:"lineup_confirmed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Player) Reset() {
@@ -487,6 +488,13 @@ func (x *Player) GetPositions() []Position {
 		return x.Positions
 	}
 	return nil
+}
+
+func (x *Player) GetLineupConfirmed() bool {
+	if x != nil {
+		return x.LineupConfirmed
+	}
+	return false
 }
 
 type Game struct {
@@ -1806,12 +1814,13 @@ const file_registry_registry_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"short_name\x18\x03 \x01(\tR\tshortName\x12(\n" +
-	"\x06league\x18\x04 \x01(\x0e2\x10.registry.LeagueR\x06league\"w\n" +
+	"\x06league\x18\x04 \x01(\x0e2\x10.registry.LeagueR\x06league\"\xa2\x01\n" +
 	"\x06Player\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
 	"\ateam_id\x18\x03 \x01(\tR\x06teamId\x120\n" +
-	"\tpositions\x18\x04 \x03(\x0e2\x12.registry.PositionR\tpositions\"\xcc\x01\n" +
+	"\tpositions\x18\x04 \x03(\x0e2\x12.registry.PositionR\tpositions\x12)\n" +
+	"\x10lineup_confirmed\x18\x05 \x01(\bR\x0flineupConfirmed\"\xcc\x01\n" +
 	"\x04Game\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12(\n" +
 	"\x06league\x18\x02 \x01(\x0e2\x10.registry.LeagueR\x06league\x12 \n" +

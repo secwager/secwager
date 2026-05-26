@@ -20,7 +20,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{instruments: make(map[string]InstrumentRecord)}
 }
 
-func (f *fakeStore) Create(_ context.Context, id string, expiry time.Time, legs []LegRow) (bool, error) {
+func (f *fakeStore) Create(_ context.Context, id string, _ string, expiry time.Time, legs []LegRow) (bool, error) {
 	if _, ok := f.instruments[id]; ok {
 		return true, nil
 	}

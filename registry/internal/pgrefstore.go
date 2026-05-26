@@ -10,11 +10,12 @@ import (
 
 func loadRefFromDB(ctx context.Context, pool *pgxpool.Pool) (*refStore, error) {
 	rs := &refStore{
-		teams:      make(map[string]*pb.Team),
-		players:    make(map[string]*pb.Player),
-		games:      make(map[string]*pb.Game),
-		gameRoster: make(map[string][]string),
-		propRules:  make(map[ruleKey][]pb.PropType),
+		teams:            make(map[string]*pb.Team),
+		players:          make(map[string]*pb.Player),
+		games:            make(map[string]*pb.Game),
+		gameRoster:       make(map[string][]string),
+		confirmedLineups: make(map[string]map[string]bool),
+		propRules:        make(map[ruleKey][]pb.PropType),
 	}
 
 	rows, err := pool.Query(ctx, `SELECT id, name, short_name, league_id FROM teams`)
@@ -87,6 +88,31 @@ func loadRefFromDB(ctx context.Context, pool *pgxpool.Pool) (*refStore, error) {
 				rs.gameRoster[g.Id] = append(rs.gameRoster[g.Id], p.Id)
 			}
 		}
+	}
+
+	lrows, err := pool.Query(ctx, `
+		SELECT game_id, player_id FROM game_lineups
+		WHERE game_id IN (
+			SELECT id FROM games
+			WHERE status != 'FINAL'
+			  AND expiry_unix >= extract(epoch from now())::bigint
+		)`)
+	if err != nil {
+		return nil, fmt.Errorf("query game_lineups: %w", err)
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var gameID, playerID string
+		if err := lrows.Scan(&gameID, &playerID); err != nil {
+			return nil, fmt.Errorf("scan lineup: %w", err)
+		}
+		if rs.confirmedLineups[gameID] == nil {
+			rs.confirmedLineups[gameID] = make(map[string]bool)
+		}
+		rs.confirmedLineups[gameID][playerID] = true
+	}
+	if err := lrows.Err(); err != nil {
+		return nil, fmt.Errorf("lineup rows: %w", err)
 	}
 
 	return rs, nil

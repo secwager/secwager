@@ -7,7 +7,9 @@ export function useGames(league: League) {
 
   return useQuery({
     queryKey: ['games', league],
-    queryFn: () => listGames(league, now, twoWeeks),
+    queryFn: () => listGames(league, now, twoWeeks).then(
+      (r) => ({ ...r, games: [...r.games].sort((a, b) => Number(a.scheduledUnix - b.scheduledUnix)) })
+    ),
     staleTime: 5 * 60 * 1000,
   })
 }

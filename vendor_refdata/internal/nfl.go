@@ -70,8 +70,8 @@ type apNFLGamesResp struct {
 	} `json:"response"`
 }
 
-// FetchNFLRefData fetches NFL teams, players, and game schedule for all weeks.
-func FetchNFLRefData(ctx context.Context, client *APISportsClient, store *Store, year int) error {
+// FetchNFLRosters fetches NFL teams and per-team rosters for the given season year.
+func FetchNFLRosters(ctx context.Context, client *APISportsClient, store *Store, year int) error {
 	if err := store.UpsertSeason(ctx, int(pb.League_NFL), year); err != nil {
 		return fmt.Errorf("upsert NFL season: %w", err)
 	}
@@ -80,10 +80,7 @@ func FetchNFLRefData(ctx context.Context, client *APISportsClient, store *Store,
 	if err := client.GetNFL(ctx, fmt.Sprintf("/teams?league=1&season=%d", year), &teamsResp); err != nil {
 		return fmt.Errorf("fetch NFL teams: %w", err)
 	}
-
-	teamCodeByID := make(map[int]string, len(teamsResp.Response))
 	for _, t := range teamsResp.Response {
-		teamCodeByID[t.ID] = t.Code
 		rec := TeamRecord{
 			ID:             makeTeamID(pb.League_NFL, t.Code),
 			Name:           t.Name,
@@ -96,22 +93,67 @@ func FetchNFLRefData(ctx context.Context, client *APISportsClient, store *Store,
 			log.Printf("upsert NFL team %s: %v", t.Code, err)
 		}
 	}
-
-	// Rosters: one call per team.
 	for _, t := range teamsResp.Response {
 		if err := fetchNFLRoster(ctx, client, store, t.ID, t.Code, year); err != nil {
 			log.Printf("fetch NFL roster team %s: %v", t.Code, err)
 		}
 	}
+	return nil
+}
 
-	// Schedule: NFL has 18 regular-season weeks plus playoffs.
-	// Fetch weeks 1–22 (regular season + postseason); skip empty weeks gracefully.
+// FetchNFLSchedule fetches the NFL schedule for all weeks, resolving team codes from the DB.
+func FetchNFLSchedule(ctx context.Context, client *APISportsClient, store *Store, year int) error {
+	teamCodes, err := store.LookupTeamCodesByLeague(ctx, int32(pb.League_NFL), nflVendor)
+	if err != nil {
+		return fmt.Errorf("lookup NFL team codes: %w", err)
+	}
+	teamCodeByExtID := func(id int) string { return teamCodes[strconv.Itoa(id)] }
+
 	for week := 1; week <= 22; week++ {
-		if err := fetchNFLWeek(ctx, client, store, year, week, teamCodeByID); err != nil {
+		if err := fetchNFLWeekWithCodes(ctx, client, store, year, week, teamCodeByExtID); err != nil {
 			log.Printf("fetch NFL week %d: %v", week, err)
 		}
 	}
 	return nil
+}
+
+// FetchNFLLineup fetches the confirmed active players for a single NFL game.
+// Returns (false, nil) if lineup data is not yet available.
+// NOTE: The exact API-Sports NFL lineup endpoint needs confirmation; using /games/players as best-guess.
+func FetchNFLLineup(ctx context.Context, client *APISportsClient, store *Store, game GameRecord) (bool, error) {
+	// apNFLLineupsResp mirrors the /games/players?id={id} response shape.
+	var resp struct {
+		Response []struct {
+			Players []struct {
+				Player struct {
+					ID int `json:"id"`
+				} `json:"player"`
+			} `json:"players"`
+		} `json:"response"`
+	}
+	if err := client.GetNFL(ctx, fmt.Sprintf("/games/players?id=%s", game.ExternalID), &resp); err != nil {
+		return false, fmt.Errorf("fetch NFL lineup game=%s: %w", game.ExternalID, err)
+	}
+	if len(resp.Response) == 0 {
+		return false, nil
+	}
+
+	var confirmedIDs []string
+	for _, teamEntry := range resp.Response {
+		for _, item := range teamEntry.Players {
+			p, ok, err := store.LookupPlayerByExternal(ctx, nflVendor, strconv.Itoa(item.Player.ID))
+			if err != nil {
+				return false, fmt.Errorf("lookup NFL player %d: %w", item.Player.ID, err)
+			}
+			if ok {
+				confirmedIDs = append(confirmedIDs, p.ID)
+			}
+		}
+	}
+	if err := store.ReplaceGameLineup(ctx, game.ID, confirmedIDs); err != nil {
+		return false, fmt.Errorf("replace lineup game=%s: %w", game.ID, err)
+	}
+	return true, nil
 }
 
 func fetchNFLRoster(ctx context.Context, client *APISportsClient, store *Store, teamNumericID int, code string, year int) error {
@@ -140,14 +182,14 @@ func fetchNFLRoster(ctx context.Context, client *APISportsClient, store *Store, 
 	return nil
 }
 
-func fetchNFLWeek(ctx context.Context, client *APISportsClient, store *Store, year, week int, teamCodeByID map[int]string) error {
+func fetchNFLWeekWithCodes(ctx context.Context, client *APISportsClient, store *Store, year, week int, codeByID func(int) string) error {
 	var resp apNFLGamesResp
 	if err := client.GetNFL(ctx, fmt.Sprintf("/games?league=1&season=%d&week=%d", year, week), &resp); err != nil {
 		return err
 	}
 	for _, item := range resp.Response {
-		homeCode := teamCodeByID[item.Teams.Home.ID]
-		awayCode := teamCodeByID[item.Teams.Away.ID]
+		homeCode := codeByID(item.Teams.Home.ID)
+		awayCode := codeByID(item.Teams.Away.ID)
 		if homeCode == "" || awayCode == "" {
 			continue
 		}

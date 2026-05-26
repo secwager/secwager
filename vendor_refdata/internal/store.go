@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -123,7 +124,19 @@ func (s *Store) UpsertGame(ctx context.Context, g GameRecord) error {
 		WHERE external_vendor = $4 AND external_id = $5 AND id != $1`,
 		g.ID, g.ScheduledUnix, g.ExpiryUnix, g.ExternalVendor, g.ExternalID)
 	if err != nil {
-		return fmt.Errorf("rescheduled-game update: %w", err)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "pkey") {
+			// Target ID already exists (another game occupies the same slot).
+			// Delete the stale row for this external game so step 2 can upsert on the target id.
+			_, err = s.pool.Exec(ctx,
+				`DELETE FROM games WHERE external_vendor = $1 AND external_id = $2 AND id != $3`,
+				g.ExternalVendor, g.ExternalID, g.ID)
+			if err != nil {
+				return fmt.Errorf("delete stale rescheduled game: %w", err)
+			}
+		} else {
+			return fmt.Errorf("rescheduled-game update: %w", err)
+		}
 	}
 
 	// Step 2: insert or update by internal id.
@@ -208,14 +221,16 @@ func (s *Store) LookupGame(ctx context.Context, internalID string) (GameRecord, 
 	return g, err == nil, err
 }
 
-// ListActiveGames returns games not yet FINAL whose window has opened (scheduled within 30m from now).
+// ListActiveGames returns games not yet FINAL that are in-window:
+// started within the last 6 hours and not yet past their expiry.
 func (s *Store) ListActiveGames(ctx context.Context) ([]GameRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, league_id, season_year, home_team_id, away_team_id,
 		       scheduled_unix, expiry_unix, status, external_id, external_vendor
 		FROM games
 		WHERE status != 'FINAL'
-		  AND scheduled_unix <= extract(epoch from now())::bigint + 1800`)
+		  AND scheduled_unix <= extract(epoch from now())::bigint + 1800
+		  AND expiry_unix    >= extract(epoch from now())::bigint`)
 	if err != nil {
 		return nil, err
 	}
@@ -237,4 +252,102 @@ func (s *Store) MarkGameFinal(ctx context.Context, gameID string, homeScore, awa
 		`UPDATE games SET status='FINAL', home_score=$1, away_score=$2, updated_at=now() WHERE id=$3`,
 		homeScore, awayScore, gameID)
 	return err
+}
+
+// LookupTeamCodesByLeague returns externalID → short_name for a league+vendor.
+// Used by schedule fetchers to resolve team codes without re-calling the vendor teams endpoint.
+func (s *Store) LookupTeamCodesByLeague(ctx context.Context, leagueID int32, vendor string) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT external_id, short_name FROM teams WHERE league_id=$1 AND external_vendor=$2`,
+		leagueID, vendor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var extID, shortName string
+		if err := rows.Scan(&extID, &shortName); err != nil {
+			return nil, err
+		}
+		out[extID] = shortName
+	}
+	return out, rows.Err()
+}
+
+// ShouldFetch returns true if dataType has never been fetched or was last fetched more than interval ago.
+func (s *Store) ShouldFetch(ctx context.Context, dataType string, interval time.Duration) (bool, error) {
+	var fetchedAt time.Time
+	err := s.pool.QueryRow(ctx,
+		`SELECT fetched_at FROM refdata_fetch_log WHERE data_type=$1`, dataType).Scan(&fetchedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return time.Since(fetchedAt) >= interval, nil
+}
+
+// RecordFetch upserts now() as the last-fetched time for dataType.
+func (s *Store) RecordFetch(ctx context.Context, dataType string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO refdata_fetch_log (data_type, fetched_at) VALUES ($1, now())
+		 ON CONFLICT (data_type) DO UPDATE SET fetched_at = now()`, dataType)
+	return err
+}
+
+// ReplaceGameLineup atomically replaces all confirmed lineup entries for a game.
+func (s *Store) ReplaceGameLineup(ctx context.Context, gameID string, playerIDs []string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `DELETE FROM game_lineups WHERE game_id=$1`, gameID); err != nil {
+		return err
+	}
+	for _, pid := range playerIDs {
+		if _, err = tx.Exec(ctx,
+			`INSERT INTO game_lineups (game_id, player_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			gameID, pid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// HasLineup returns true if at least one confirmed lineup entry exists for the game.
+func (s *Store) HasLineup(ctx context.Context, gameID string) (bool, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM game_lineups WHERE game_id=$1`, gameID).Scan(&count)
+	return count > 0, err
+}
+
+// ListUpcomingGames returns non-FINAL games whose kickoff is within [now-window, now+window].
+func (s *Store) ListUpcomingGames(ctx context.Context, window time.Duration) ([]GameRecord, error) {
+	windowSecs := int64(window.Seconds())
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, league_id, season_year, home_team_id, away_team_id,
+		       scheduled_unix, expiry_unix, status, external_id, external_vendor
+		FROM games
+		WHERE status != 'FINAL'
+		  AND scheduled_unix BETWEEN extract(epoch from now())::bigint - $1
+		                         AND extract(epoch from now())::bigint + $1`,
+		windowSecs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GameRecord
+	for rows.Next() {
+		var g GameRecord
+		if err := rows.Scan(&g.ID, &g.LeagueID, &g.SeasonYear, &g.HomeTeamID, &g.AwayTeamID,
+			&g.ScheduledUnix, &g.ExpiryUnix, &g.Status, &g.ExternalID, &g.ExternalVendor); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }

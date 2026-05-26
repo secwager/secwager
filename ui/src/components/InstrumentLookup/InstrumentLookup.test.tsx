@@ -55,7 +55,6 @@ describe('InstrumentLookup', () => {
 
   it('shows loading state while fetching', async () => {
     vi.mocked(registry.getInstrument).mockReturnValue(new Promise(() => {})) // never resolves
-    const user = userEvent.setup()
     wrap(<InstrumentLookup initialId={FAKE_ID} />)
     // initialId pre-populates both inputId and searchId, so query fires immediately
     await waitFor(() => {

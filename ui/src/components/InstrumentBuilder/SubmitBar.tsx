@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useBuilderStore } from '../../store/builderStore'
 import { useAuthStore } from '../../store/authStore'
 import { createInstrument } from '../../grpc/registry'
@@ -12,6 +12,8 @@ export function SubmitBar({ onCreated }: Props) {
   const { jwt } = useAuthStore()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => { if (jwt) setError(null) }, [jwt])
 
   async function handleSubmit() {
     if (!jwt) { setError('Sign in to create instruments.'); return }

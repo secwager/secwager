@@ -112,7 +112,7 @@ func newMockServer(routes []mockRoute) *httptest.Server {
 func resetDB(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	tables := []string{"game_player_stats", "games", "players", "teams", "seasons"}
+	tables := []string{"game_player_stats", "game_lineups", "games", "players", "teams", "seasons", "refdata_fetch_log"}
 	for _, tbl := range tables {
 		if _, err := testPool.Exec(ctx, "DELETE FROM "+tbl); err != nil {
 			t.Fatalf("reset %s: %v", tbl, err)

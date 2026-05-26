@@ -61,11 +61,12 @@ func (c *RefCache) get() *refStore {
 	defer c.mu.RUnlock()
 	if c.snapshot == nil {
 		return &refStore{
-			teams:      make(map[string]*pb.Team),
-			players:    make(map[string]*pb.Player),
-			games:      make(map[string]*pb.Game),
-			gameRoster: make(map[string][]string),
-			propRules:  defaultPropRules(),
+			teams:            make(map[string]*pb.Team),
+			players:          make(map[string]*pb.Player),
+			games:            make(map[string]*pb.Game),
+			gameRoster:       make(map[string][]string),
+			confirmedLineups: make(map[string]map[string]bool),
+			propRules:        defaultPropRules(),
 		}
 	}
 	return c.snapshot

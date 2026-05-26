@@ -21,10 +21,11 @@ export function LegList() {
           <span className="text-gray-700 truncate">{describeLeg(leg)}</span>
           <button
             onClick={() => removeLeg(i)}
-            className="ml-4 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+            className="ml-4 rounded px-1.5 py-0.5 text-xs text-red-500 border border-red-200
+                       hover:bg-red-50 transition-colors flex-shrink-0"
             aria-label="Remove leg"
           >
-            ✕
+            Remove
           </button>
         </div>
       ))}

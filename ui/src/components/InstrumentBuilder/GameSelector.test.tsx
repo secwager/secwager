@@ -52,7 +52,7 @@ describe('GameSelector — error state', () => {
 
 describe('GameSelector — empty state', () => {
   it('shows no-games message when list is empty', () => {
-    mockUseGames.mockReturnValue({ data: { games: [] }, isLoading: false, isError: false } as ReturnType<typeof useGames>)
+    mockUseGames.mockReturnValue({ data: { games: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useGames>)
     render(<GameSelector />)
     expect(screen.getByText(/no upcoming games/i)).toBeInTheDocument()
   })
